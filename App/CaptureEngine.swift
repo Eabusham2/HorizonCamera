@@ -231,7 +231,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         let wideFOV = devices.first(where: { $0.position == .back && $0.deviceType == .builtInWideAngleCamera })?.activeFormat.videoFieldOfView ?? 70
         capabilities.lenses = devices.map { camera in
             let front = camera.position == .front
-            let factor = tan(Double(wideFOV)*.pi/360)/tan(Double(camera.activeFormat.videoFieldOfView)*.pi/360)
+            let factor = tan(Double(wideFOV) * .pi/360)/tan(Double(camera.activeFormat.videoFieldOfView) * .pi/360)
             let label = front ? "Front" : (abs(factor-factor.rounded()) < 0.12 ? String(format:"%.0f×",factor) : String(format:"%.1f×",factor))
             return LensOption(id:camera.uniqueID,label:label,name:camera.localizedName,isFront:front)
         }.sorted { $0.isFront == $1.isFront ? $0.label.localizedStandardCompare($1.label) == .orderedAscending : !$0.isFront }

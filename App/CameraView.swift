@@ -121,7 +121,7 @@ struct CameraView: View {
                 .frame(width:62,height:62).position(x:point.x*width,y:point.y*height)
         }
         if model.settings.showLevel {
-            let roll = AngleMath.wrap(model.diagnostics.rollDegrees * .pi/180)*180/.pi
+            let roll = AngleMath.wrap(model.diagnostics.rollDegrees * .pi/180)*180 / .pi
             Rectangle().fill(abs(roll) < 1 ? Color.yellow:Color.white.opacity(0.6))
                 .frame(width:44,height:1).rotationEffect(.degrees(model.settings.horizonLock ? 0:roll))
                 .position(x:width/2,y:height/2)

@@ -64,7 +64,8 @@ import Combine
         guard !requesting, !showLibrary, !isRecording, !busy, let engine else { return }
         requesting = true; defer { requesting = false }
         let video = AVCaptureDevice.authorizationStatus(for:.video)
-        let allowed = video == .authorized || (video == .notDetermined && (await AVCaptureDevice.requestAccess(for:.video)))
+        var allowed = video == .authorized
+        if video == .notDetermined { allowed = await AVCaptureDevice.requestAccess(for:.video) }
         guard allowed else { permissionDenied = true; error = "Allow Camera access in Settings to use HorizonCamera."; return }
         permissionDenied = false
         var microphone = AVCaptureDevice.authorizationStatus(for:.audio) == .authorized

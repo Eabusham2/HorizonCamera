@@ -74,7 +74,7 @@ struct CameraSettings: Codable, Equatable {
     var horizonTrimDegrees = 0.0
     var motionOffsetMilliseconds = 0.0
     var framing: Framing { mode == .photo ? photoFraming : videoFraming }
-    var isProcessedPhoto: Bool { horizonLock || zoomLock || zoom > 1.001 || filter != .original }
+    var isProcessedPhoto: Bool { horizonLock || zoomLock || zoom > 1.001 || filter != .original || (mode == .photo && photoFraming != .classic) }
     var captureFPS: Int { mode == .slowMotion ? 120 : fps }
     var outputSize: Size2 { framing.size(longEdge: mode == .slowMotion ? 1920 : resolution.longEdge) }
     var reserve: Double { zoomLock ? 0.80 : (horizonLock ? 0.97 : 1) }
