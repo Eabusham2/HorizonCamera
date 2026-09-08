@@ -78,6 +78,11 @@ struct CameraSettings: Codable, Equatable {
     var captureFPS: Int { mode == .slowMotion ? 120 : fps }
     var outputSize: Size2 { framing.size(longEdge: mode == .slowMotion ? 1920 : resolution.longEdge) }
     var reserve: Double { zoomLock ? 0.80 : (horizonLock ? 0.97 : 1) }
+    func requiresCaptureReconfiguration(comparedTo old: CameraSettings) -> Bool {
+        mode != old.mode || resolution != old.resolution || captureFPS != old.captureFPS ||
+        horizonLock != old.horizonLock || zoomLock != old.zoomLock || livePhoto != old.livePhoto ||
+        raw != old.raw || mirrorSelfie != old.mirrorSelfie || isProcessedPhoto != old.isProcessedPhoto
+    }
     var cadence: RecordingCadence {
         switch mode {
         case .slowMotion: return .slowMotion(captureFPS: 120, playbackFPS: 30)

@@ -36,7 +36,7 @@ final class SubjectTracker {
         let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         do {
             try handler.perform([request], on: small)
-            guard let observation = request.results?.first, observation.confidence >= 0.35 else {
+            guard let observation = request.results?.first as? VNDetectedObjectObservation, observation.confidence >= 0.35 else {
                 misses += 1; confidence = 0
                 if misses >= 3 { lose() }
                 return

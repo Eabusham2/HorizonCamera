@@ -24,6 +24,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var wantedRunning = false
     private var microphoneAllowed = false
     private var configured = false
+    private var reportedCapabilities = CameraCapabilities()
     private var photoJobs: [Int64: PhotoCapture] = [:]
     private var notifications: [NSObjectProtocol] = []
     private var movie: MovieRecorder? // frameQueue only
@@ -118,7 +119,18 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         sessionQueue.async { [self] in
             guard state == .ready || state == .stopped else { return }
             let old = configuration, previousLens = videoInput?.device.uniqueID
+            if configured && settings == old && (lensID == nil || lensID == previousLens) { return }
             do {
+                if configured, let device = videoInput?.device,
+                   (lensID == nil || lensID == previousLens),
+                   !settings.requiresCaptureReconfiguration(comparedTo: old) {
+                    try applyControls(settings, device: device)
+                    configuration = settings
+                    frameQueue.sync { [self] in processor.configure(settings, front: device.position == .front) }
+                    let capabilities = reportedCapabilities
+                    DispatchQueue.main.async { [weak self] in self?.onCapabilities?(capabilities, settings) }
+                    return
+                }
                 try configure(settings, selected: lensID ?? previousLens)
             } catch {
                 report(error.localizedDescription)
@@ -137,6 +149,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 devices.first(where: { $0.position == .back && $0.deviceType == .builtInWideAngleCamera }) ?? devices.first else {
             throw CameraFailure.message("No camera is available. A physical iPhone is required to capture.")
         }
+        let previousDeviceID = videoInput?.device.uniqueID
         let fps = settings.captureFPS
         let targetWidth = settings.mode == .slowMotion ? 1920 :
             ((settings.horizonLock || settings.zoomLock || settings.resolution == .ultraHD) ? 3840 : 1920)
@@ -192,6 +205,8 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             }
             try device.lockForConfiguration()
             device.activeFormat = format
+            device.automaticallyAdjustsVideoHDREnabled = false
+            if device.isVideoHDREnabled { device.isVideoHDREnabled = false }
             device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
             device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
             device.videoZoomFactor = max(1, device.minAvailableVideoZoomFactor)
@@ -205,7 +220,9 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             for connection in [videoOutput.connection(with: .video), photoOutput.connection(with: .video)].compactMap({ $0 }) {
                 if connection.isVideoOrientationSupported { connection.videoOrientation = .portrait }
                 if connection.isVideoMirroringSupported {
-                    connection.automaticallyAdjustsVideoMirroring = false; connection.isVideoMirrored = false
+                    connection.automaticallyAdjustsVideoMirroring = false
+                    connection.isVideoMirrored = connection === photoOutput.connection(with: .video) &&
+                        device.position == .front && settings.mirrorSelfie && !settings.isProcessedPhoto
                 }
                 if connection.isVideoStabilizationSupported {
                     // Native EIS changes the crop and its timing. Do not combine
@@ -221,7 +238,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         try applyControls(settings, device: device)
         let changedSource = configuration.captureFPS != settings.captureFPS || configuration.resolution != settings.resolution ||
             configuration.horizonLock != settings.horizonLock || configuration.zoomLock != settings.zoomLock ||
-            processor.front != (device.position == .front)
+            previousDeviceID != device.uniqueID
         configuration = settings
         frameQueue.sync { [self] in
             if changedSource { processor.resetGeometry() }
@@ -246,6 +263,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         capabilities.supports60 = device.formats.contains { $0.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= 60 } }
         capabilities.supports120 = device.formats.contains { $0.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= 120 } }
         capabilities.sourceDescription = "\(dimensions.width)×\(dimensions.height) sensor stream · \(fps) fps"
+        reportedCapabilities = capabilities
         DispatchQueue.main.async { [weak self] in self?.onCapabilities?(capabilities,settings) }
     }
     private func applyControls(_ settings: CameraSettings, device: AVCaptureDevice) throws {
@@ -309,6 +327,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             do {
                 try MediaFiles.requireSpace()
                 let url = try MediaFiles.newURL(extension:"mov"), settings = configuration
+                let microphoneAvailable = audioInput != nil && audioOutput.connection(with: .audio) != nil
                 setState(.recording)
                 frameQueue.async { [self] in
                     do {
@@ -317,7 +336,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                             throw CameraFailure.message("Motion data is not ready. Enable Motion permission or turn Horizon Lock off.")
                         }
                         processor.beginRecording()
-                        movie = try MovieRecorder(url:url,settings:settings,renderer:renderer,microphoneAvailable:audioInput != nil)
+                        movie = try MovieRecorder(url:url,settings:settings,renderer:renderer,microphoneAvailable:microphoneAvailable)
                         lastSpaceCheck = 0
                     } catch {
                         processor.endRecording()
@@ -370,12 +389,12 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                     self.frameQueue.async { [self] in
                         do {
                             let packet = try result.get()
-                            let draft = try savePhoto(packet)
-                            deliver(.success(draft))
-                        } catch { deliver(.failure(error)) }
-                        sessionQueue.async { [self] in
-                            photoJobs.removeValue(forKey:id)
-                            setState(wantedRunning ? .ready : .stopped)
+                            let draft = try self.savePhoto(packet)
+                            self.deliver(.success(draft))
+                        } catch { self.deliver(.failure(error)) }
+                        self.sessionQueue.async { [self] in
+                            self.photoJobs.removeValue(forKey:id)
+                            self.setState(self.wantedRunning ? .ready : .stopped)
                         }
                     }
                 }

@@ -52,8 +52,8 @@ import Combine
             switch result {
             case .success(let media):
                 Task {
-                    await library.add(media,saveToPhotos:settings.saveToPhotos)
-                    notice = library.message; endBackgroundTask()
+                    await self.library.add(media,saveToPhotos:self.settings.saveToPhotos)
+                    self.notice = self.library.message; self.endBackgroundTask()
                 }
             case .failure(let error): self.error = error.localizedDescription; endBackgroundTask()
             }
@@ -94,6 +94,7 @@ import Combine
         guard canConfigure else { return }
         var next = settings; edit(&next)
         next.zoom = min(max(next.zoom,1),12)
+        if next.isProcessedPhoto { next.livePhoto = false; next.raw = false }
         settings = next
         settingsTask?.cancel()
         settingsTask = Task { [weak self] in

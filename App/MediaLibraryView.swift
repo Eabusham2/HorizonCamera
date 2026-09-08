@@ -4,9 +4,10 @@ import PhotosUI
 import ImageIO
 
 private enum ThumbnailLoader {
-    static let cache = NSCache<NSURL,UIImage>()
+    static let cache = NSCache<NSString,UIImage>()
     static func load(_ url:URL,video:Bool,maxSize:Int = 600) async -> UIImage? {
-        if let image = cache.object(forKey:url as NSURL) { return image }
+        let key = (url.absoluteString + "#" + String(maxSize)) as NSString
+        if let image = cache.object(forKey:key) { return image }
         return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos:.utility).async {
                 var image: UIImage?
@@ -20,7 +21,7 @@ private enum ThumbnailLoader {
                         kCGImageSourceCreateThumbnailWithTransform:true,kCGImageSourceThumbnailMaxPixelSize:maxSize]
                     if let cg = CGImageSourceCreateThumbnailAtIndex(source,0,options as CFDictionary) { image = UIImage(cgImage:cg) }
                 }
-                if let image { cache.setObject(image,forKey:url as NSURL,cost:maxSize*maxSize*4);cache.totalCostLimit = 40_000_000 }
+                if let image { cache.setObject(image,forKey:key,cost:maxSize*maxSize*4);cache.totalCostLimit = 40_000_000 }
                 continuation.resume(returning:image)
             }
         }
