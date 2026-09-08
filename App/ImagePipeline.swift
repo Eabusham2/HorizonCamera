@@ -64,6 +64,8 @@ final class FrameProcessor {
     private var pendingPinch: (target: Point2, anchor: Point2)?
     private var pendingTarget: Point2?
     private(set) var lastPlan: CropPlan?
+    private var frozenAngle: Double?
+    private var planHistory: [(Double, CropPlan)] = []
     private var fpsStart = 0.0
     private var fpsCount = 0
     private var fps = 0.0
@@ -72,8 +74,10 @@ final class FrameProcessor {
     func resetGeometry() {
         horizon.reset(); tracker.reset(); manualCenter = Point2(0.5, 0.5)
         pendingPinch = nil; pendingTarget = nil; lastPlan = nil; lastAngle = 0
-        preview.publish(nil); fpsCount = 0; fpsStart = 0
+        preview.publish(nil); fpsCount = 0; fpsStart = 0; planHistory.removeAll(); frozenAngle = nil
     }
+    func beginRecording() { frozenAngle = lastPlan?.angle }
+    func endRecording() { frozenAngle = nil }
     func configure(_ next: CameraSettings, front: Bool) {
         if self.front != front || settings.framing != next.framing || settings.mirrorSelfie != next.mirrorSelfie {
             resetGeometry()
@@ -120,7 +124,7 @@ final class FrameProcessor {
             // Without Horizon Lock, orientation is a fixed framing choice, never
             // continuously counter-rotated. Portrait=0; landscape picks its side.
             if settings.framing == .landscape {
-                angle = (reading?.gx ?? 1) >= 0 ? -.pi/2 : .pi/2
+                angle = frozenAngle ?? ((reading?.gx ?? 1) >= 0 ? -.pi/2 : .pi/2)
             } else { angle = 0 }
             diagnostics.motionStatus = "Horizon off"
         }
@@ -149,6 +153,8 @@ final class FrameProcessor {
             zoom: settings.zoom, fullTurn: settings.horizonLock, reserve: settings.reserve, requestedCenter: desired)
         manualCenter = Point2(plan.center.x/size.width, plan.center.y/size.height)
         lastPlan = plan
+        planHistory.append((hostTime,plan))
+        if planHistory.count > 600 { planHistory.removeFirst(planHistory.count-600) }
         let output = renderer.filter(renderer.transform(source, plan: plan), settings.filter)
         let target = settings.zoomLock ? tracker.box.map { box -> Point2 in
             let p = plan.sourceToOutput(Point2(box.midX*size.width, box.midY*size.height))
@@ -171,7 +177,7 @@ final class FrameProcessor {
     /// normalize their center crop to the preview's source aspect, then reuse
     /// the exact normalized crop center and lock transform at still exposure time.
     func processPhoto(_ input: CIImage, hostTime: Double) throws -> CIImage {
-        guard let live = lastPlan else { throw CameraFailure.message("The camera is not ready for a photo yet.") }
+        guard let live = planHistory.min(by: { abs($0.0-hostTime) < abs($1.0-hostTime) })?.1 ?? lastPlan else { throw CameraFailure.message("The camera is not ready for a photo yet.") }
         var image = input
         if front && settings.mirrorSelfie { image = image.oriented(.upMirrored) }
         let e = image.extent, ratio = live.source.width/live.source.height
