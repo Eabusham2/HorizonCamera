@@ -17,6 +17,7 @@ import Combine
     let library = MediaLibrary()
     let renderer: ImageRenderer?
     let engine: CaptureEngine?
+    private let nativeMovie = NativeMovieController()
     private var requesting = false
     private var timerTask: Task<Void, Never>?
     private var settingsTask: Task<Void, Never>?
@@ -29,6 +30,7 @@ import Combine
     private var settingsURL: URL {
         FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("camera-settings.json")
     }
+
     init() {
         renderer = ImageRenderer()
         engine = renderer.map { CaptureEngine(renderer:$0) }
@@ -36,30 +38,38 @@ import Combine
             settings = saved; settings.torch = false; settings.aeafLock = false
         }
         engine?.onState = { [weak self] state in
-            self?.state = state
+            guard let self, !self.nativeMovie.isRecording else { return }
+            self.state = state
             UIApplication.shared.isIdleTimerDisabled = state == .recording
         }
         engine?.onCapabilities = { [weak self] capabilities, actual in
-            self?.capabilities = capabilities; self?.settings = actual
+            guard let self else { return }
+            self.settings = actual
+            if let engine = self.engine {
+                self.capabilities = NativeMovieController.augment(capabilities, engine: engine)
+                NativeMovieController.applyLiveSettings(actual, engine: engine)
+            } else { self.capabilities = capabilities }
         }
         engine?.onDiagnostics = { [weak self] info in self?.diagnostics = info }
-        engine?.onError = { [weak self] text in
-            // Do not queue hundreds of identical alerts when the camera stalls.
-            if self?.error != text { self?.error = text }
-        }
-        engine?.onMedia = { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success(let media):
-                Task {
-                    await self.library.add(media,saveToPhotos:self.settings.saveToPhotos)
-                    self.notice = self.library.message; self.endBackgroundTask()
-                }
-            case .failure(let error): self.error = error.localizedDescription; endBackgroundTask()
-            }
-        }
+        engine?.onError = { [weak self] text in if self?.error != text { self?.error = text } }
+        engine?.onMedia = { [weak self] result in self?.handleMedia(result) }
         if engine == nil { error = "This device does not provide the Metal renderer required by HorizonCamera." }
     }
+
+    private func handleMedia(_ result: Result<MediaDraft, Error>) {
+        switch result {
+        case .success(let media):
+            Task {
+                await library.add(media, saveToPhotos: settings.saveToPhotos)
+                notice = library.message
+                endBackgroundTask()
+            }
+        case .failure(let error):
+            self.error = error.localizedDescription
+            endBackgroundTask()
+        }
+    }
+
     func start() async {
         guard !requesting, !showLibrary, !isRecording, !busy, let engine else { return }
         requesting = true; defer { requesting = false }
@@ -69,27 +79,27 @@ import Combine
         guard allowed else { permissionDenied = true; error = "Allow Camera access in Settings to use HorizonCamera."; return }
         permissionDenied = false
         var microphone = AVCaptureDevice.authorizationStatus(for:.audio) == .authorized
-        if settings.audio && AVCaptureDevice.authorizationStatus(for:.audio) == .notDetermined {
-            microphone = await AVCaptureDevice.requestAccess(for:.audio)
-        }
+        if settings.audio && AVCaptureDevice.authorizationStatus(for:.audio) == .notDetermined { microphone = await AVCaptureDevice.requestAccess(for:.audio) }
         if settings.audio && !microphone { settings.audio = false; notice = "Microphone permission is off. Videos will be silent." }
         guard UIApplication.shared.applicationState == .active else { return }
         engine.start(settings:settings,microphoneAllowed:microphone)
     }
+
     func suspend() {
         timerTask?.cancel(); countdown = nil; settingsTask?.cancel()
+        if nativeMovie.isRecording { nativeMovie.stop() }
         if isRecording || state == .finishing || state == .takingPhoto {
             if backgroundTask == .invalid {
-                backgroundTask = UIApplication.shared.beginBackgroundTask(withName:"Finish camera capture") { [weak self] in
-                    DispatchQueue.main.async { self?.endBackgroundTask() }
-                }
+                backgroundTask = UIApplication.shared.beginBackgroundTask(withName:"Finish camera capture") { [weak self] in DispatchQueue.main.async { self?.endBackgroundTask() } }
             }
         }
         engine?.suspend(); UIApplication.shared.isIdleTimerDisabled = false
     }
+
     private func endBackgroundTask() {
         if backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(backgroundTask); backgroundTask = .invalid }
     }
+
     func change(_ edit: (inout CameraSettings) -> Void) {
         guard canConfigure else { return }
         let old = settings
@@ -100,32 +110,40 @@ import Combine
         settingsTask = Task { [weak self] in
             try? await Task.sleep(for:.milliseconds(120))
             guard !Task.isCancelled, let self else { return }
-            engine?.update(settings); persist()
+            engine?.update(settings)
+            if let engine { NativeMovieController.applyLiveSettings(settings, engine: engine) }
+            persist()
         }
     }
+
     func binding<Value>(_ keyPath: WritableKeyPath<CameraSettings,Value>) -> Binding<Value> {
         Binding(get:{ self.settings[keyPath:keyPath] },set:{ value in self.change { $0[keyPath:keyPath] = value } })
     }
+
     func selectMode(_ mode: CameraMode) {
-        if mode == .slowMotion && !capabilities.supports120 { notice = "This lens does not support 120 fps slow motion."; return }
+        if mode == .slowMotion && capabilities.supportedSlowMotionFPS.isEmpty { notice = "This lens does not support high-frame-rate slow motion."; return }
+        if mode == .cinematic && !capabilities.cinematic { notice = "Cinematic Video requires a supported iPhone, lens, and format on iOS 26+."; return }
+        if mode == .spatial && !capabilities.spatialVideo { notice = "Spatial Video is not available with this lens/format."; return }
         change { $0.mode = mode; $0.torch = false }
     }
+
     func selectLens(_ lens: LensOption) {
         guard canConfigure else { return }
         settingsTask?.cancel(); settings.zoom = 1
         engine?.update(settings,lensID:lens.id)
     }
+
     func flipCamera() {
         let front = capabilities.lenses.first(where: { $0.id == capabilities.selectedLens })?.isFront ?? false
-        if let target = capabilities.lenses.first(where: { $0.isFront != front && ($0.label == "1×" || $0.isFront) }) ?? capabilities.lenses.first(where: { $0.isFront != front }) {
-            selectLens(target)
-        }
+        if let target = capabilities.lenses.first(where: { $0.isFront != front && ($0.label == "1×" || $0.isFront) }) ?? capabilities.lenses.first(where: { $0.isFront != front }) { selectLens(target) }
     }
+
     func zoom(_ value: Double, at anchor: Point2? = nil) {
         guard state == .ready || state == .recording else { return }
         settings.zoom = min(max(value,1),12)
         engine?.setZoom(settings.zoom,anchor:anchor)
     }
+
     func tap(_ point: Point2) {
         guard state == .ready || state == .recording else { return }
         engine?.tap(point); focusPoint = point
@@ -135,13 +153,23 @@ import Combine
             if !Task.isCancelled { focusPoint = nil }
         }
     }
+
     func shutter() {
         if countdown != nil { timerTask?.cancel(); countdown = nil; return }
+        if nativeMovie.isRecording { state = .finishing; nativeMovie.stop(); return }
         if isRecording { engine?.stopRecording(); return }
         guard canConfigure else { return }
-        // Flush an outstanding settings edit before scheduling the capture.
         settingsTask?.cancel(); engine?.update(settings)
-        if settings.mode.isMovie { engine?.startRecording(); return }
+        if settings.mode.isMovie {
+            if settings.usesNativeMoviePipeline, let engine {
+                nativeMovie.start(engine: engine, settings: settings, stateChanged: { [weak self] recording in
+                    guard let self else { return }
+                    self.state = recording ? .recording : .ready
+                    UIApplication.shared.isIdleTimerDisabled = recording
+                }, completion: { [weak self] result in self?.handleMedia(result) })
+            } else { engine?.startRecording() }
+            return
+        }
         if settings.timer == 0 { engine?.capturePhoto(); return }
         let seconds = settings.timer
         timerTask = Task { [weak self] in
@@ -155,10 +183,12 @@ import Combine
             countdown = nil; engine?.capturePhoto()
         }
     }
+
     func openLibrary() {
         guard !isRecording && !busy && countdown == nil else { return }
         engine?.suspend(); showLibrary = true
     }
+
     func enableAudio(_ enabled: Bool) {
         guard canConfigure else { return }
         if !enabled { change { $0.audio = false }; return }
@@ -170,18 +200,21 @@ import Combine
             engine?.start(settings:settings,microphoneAllowed:true); persist()
         }
     }
+
     func resetFraming() {
         guard canConfigure else { return }
         settings.zoom = 1
         engine?.update(settings)
         engine?.frameQueue.async { [weak engine] in engine?.processor.resetGeometry() }
     }
+
     func persist() {
         do {
             try FileManager.default.createDirectory(at:settingsURL.deletingLastPathComponent(),withIntermediateDirectories:true)
             try JSONEncoder().encode(settings).write(to:settingsURL,options:.atomic)
         } catch { notice = "Settings could not be saved: \(error.localizedDescription)" }
     }
+
     func diagnosticURL() -> URL? {
         do {
             let settingsObject = try JSONSerialization.jsonObject(with:JSONEncoder().encode(settings))
