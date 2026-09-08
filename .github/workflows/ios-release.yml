@@ -22,8 +22,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.0.1.app/Contents/Developer
     steps:
       - name: Check out exact source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -32,7 +30,9 @@ jobs:
       - name: Toolchain and metadata
         run: |
           set -euo pipefail
+          xcode-select -p
           xcodebuild -version
+          xcrun simctl list runtimes
           swift --version
           mkdir -p build/logs
           python3 Scripts/generate_project.py
