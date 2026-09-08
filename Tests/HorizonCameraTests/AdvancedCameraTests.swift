@@ -20,7 +20,7 @@ final class AdvancedCameraTests: XCTestCase {
     }
     func testExpandedResolutionAndFrameRateModel() {
         XCTAssertEqual(Resolution.hd.longEdge, 1280)
-        var s = CameraSettings(); s.mode = .slowMotion; s.slowMotionFPS = 240
+        var s = CameraSettings(); s.mode = .slowMotion; s.slowMotionFPS = 240; s.resolution = .hd
         XCTAssertEqual(s.captureFPS, 240)
         XCTAssertEqual(s.outputSize.width.rounded(), 720)
         XCTAssertEqual(s.outputSize.height.rounded(), 1280)

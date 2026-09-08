@@ -201,7 +201,7 @@ struct CameraSettings: Codable, Equatable {
 
     var cadence: RecordingCadence {
         switch mode {
-        case .slowMotion: return .slowMotion(captureFPS: slowMotionFPS, playbackFPS: 30)
+        case .slowMotion: return .slowMotion(captureFPS: Double(slowMotionFPS), playbackFPS: 30)
         case .timeLapse: return .timeLapse(interval: timeLapseInterval, playbackFPS: 30)
         default: return .realtime
         }
@@ -247,9 +247,9 @@ struct CameraCapabilities {
     var spatialAudio = false
     var windNoiseRemoval = false
     var sourceDescription = "Starting camera…"
-    var supports4K: Bool { supportedResolutions.contains(.ultraHD) }
-    var supports60: Bool { supportedFPS.contains(60) }
-    var supports120: Bool { supportedSlowMotionFPS.contains(120) || supportedFPS.contains(120) }
+    var supports4K = false
+    var supports60 = false
+    var supports120 = false
 }
 
 struct FrameDiagnostics {

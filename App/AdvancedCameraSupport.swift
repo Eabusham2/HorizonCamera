@@ -21,7 +21,7 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
         let fpsCandidates = [24, 25, 30, 50, 60, 120]
         result.supportedFPS = fpsCandidates.filter { fps in format.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= Double(fps) && $0.maxFrameRate >= Double(fps) } }
         result.supportedSlowMotionFPS = [120, 240].filter { fps in device.formats.contains { f in f.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= Double(fps) } } }
-        result.autoFPS = format.isAutoVideoFrameRateSupported
+        if #available(iOS 18.0, *) { result.autoFPS = format.isAutoVideoFrameRateSupported }
         result.smoothAutofocus = device.isSmoothAutoFocusSupported
         result.focusRangeRestriction = device.isAutoFocusRangeRestrictionSupported
         result.hdrHLG = format.supportedColorSpaces.contains(.HLG_BT2020)
@@ -56,7 +56,7 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                 defer { device.unlockForConfiguration() }
                 if device.isSmoothAutoFocusSupported { device.isSmoothAutoFocusEnabled = settings.smoothAutofocus }
                 if device.isAutoFocusRangeRestrictionSupported { device.autoFocusRangeRestriction = settings.focusRange.avValue }
-                if device.activeFormat.isAutoVideoFrameRateSupported { device.isAutoVideoFrameRateEnabled = settings.autoFPS }
+                if #available(iOS 18.0, *), device.activeFormat.isAutoVideoFrameRateSupported { device.isAutoVideoFrameRateEnabled = settings.autoFPS }
                 let desiredColor: AVCaptureColorSpace
                 switch settings.colorProfile {
                 case .sdr: desiredColor = .sRGB
