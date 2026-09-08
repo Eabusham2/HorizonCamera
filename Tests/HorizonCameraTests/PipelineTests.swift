@@ -1,0 +1,215 @@
+import XCTest
+import AVFoundation
+import CoreImage
+import Metal
+import AudioToolbox
+@testable import HorizonCamera
+
+final class PipelineTests: XCTestCase {
+    private func makeRenderer() throws -> ImageRenderer {
+        try XCTUnwrap(ImageRenderer(), "The simulator must provide Metal for the actual pipeline tests.")
+    }
+    private func pattern(width: Double, height: Double) -> CIImage {
+        let bounds = CGRect(x:0,y:0,width:width,height:height)
+        var image = CIImage(color:CIColor(red:0.08,green:0.12,blue:0.20)).cropped(to:bounds)
+        let colors = [CIColor(red:0.9,green:0.1,blue:0.1), CIColor(red:0.1,green:0.8,blue:0.2),
+                      CIColor(red:0.1,green:0.2,blue:0.9), CIColor(red:0.9,green:0.8,blue:0.1)]
+        for row in 0..<2 {
+            for column in 0..<2 {
+                let rect = CGRect(x:Double(column)*width/2,y:Double(row)*height/2,width:width/2,height:height/2)
+                image = CIImage(color:colors[row*2+column]).cropped(to:rect).composited(over:image)
+            }
+        }
+        return image.cropped(to:bounds)
+    }
+    private func pixel(_ image:CIImage, _ point:Point2, renderer:ImageRenderer) -> [UInt8] {
+        var bytes = [UInt8](repeating:0,count:4)
+        bytes.withUnsafeMutableBytes { memory in
+            renderer.context.render(image,toBitmap:memory.baseAddress!,rowBytes:4,
+                bounds:CGRect(x:floor(point.x),y:floor(point.y),width:1,height:1),
+                format:.RGBA8,colorSpace:renderer.colorSpace)
+        }
+        return bytes
+    }
+    private func buffer(_ image:CIImage, renderer:ImageRenderer) throws -> CVPixelBuffer {
+        var value: CVPixelBuffer?
+        let code = CVPixelBufferCreate(kCFAllocatorDefault,Int(image.extent.width),Int(image.extent.height),
+            kCVPixelFormatType_32BGRA,[kCVPixelBufferMetalCompatibilityKey as String:true,
+                                     kCVPixelBufferIOSurfacePropertiesKey as String:[:]] as CFDictionary,&value)
+        XCTAssertEqual(code,kCVReturnSuccess)
+        let result = try XCTUnwrap(value)
+        renderer.render(image,into:result)
+        return result
+    }
+    func testActualCoreImagePixelsFollowTheSharedInverseTransform() throws {
+        let renderer = try makeRenderer(), source = pattern(width:400,height:600)
+        for angle in [0.0,0.6,Double.pi/2,Double.pi,3*Double.pi/2] {
+            let plan = try CropGeometry.plan(source:Size2(400,600),output:Size2(240,160),
+                angle:angle,zoom:1.5,fullTurn:true,reserve:0.9)
+            let output = renderer.transform(source,plan:plan)
+            for p in [Point2(24,24),Point2(210,24),Point2(24,130),Point2(210,130)] {
+                let input = plan.outputToSource(Point2(p.x+0.5,p.y+0.5))
+                if abs(input.x-200)<4 || abs(input.y-300)<4 { continue }
+                let actual = pixel(output,p,renderer:renderer)
+                let expected = pixel(source,input,renderer:renderer)
+                for i in 0..<4 { XCTAssertLessThanOrEqual(abs(Int(actual[i])-Int(expected[i])),3,"angle=\(angle), pixel=\(p)") }
+            }
+        }
+    }
+    func testRenderedFullTurnCropContainsNoTransparentOrBlackCorners() throws {
+        let renderer = try makeRenderer()
+        let source = CIImage(color:.white).cropped(to:CGRect(x:0,y:0,width:360,height:640))
+        for degrees in stride(from:0.0,through:360,by:15) {
+            let p = try CropGeometry.plan(source:Size2(360,640),output:Size2(192,108),
+                angle:degrees * .pi/180,fullTurn:true,reserve:0.97,requestedCenter:Point2(-900,9000))
+            let output = renderer.transform(source,plan:p)
+            for point in [Point2(1,1),Point2(190,1),Point2(1,106),Point2(190,106)] {
+                let value = pixel(output,point,renderer:renderer)
+                XCTAssertGreaterThan(value[0],240);XCTAssertGreaterThan(value[3],250)
+            }
+        }
+    }
+    func testPinchUsesThePointUnderTheFingersAndPublishesTheSameImage() throws {
+        let renderer = try makeRenderer()
+        let processor = FrameProcessor(motion:MotionService(),renderer:renderer)
+        var settings = CameraSettings();settings.horizonLock=false;settings.zoomLock=false
+        processor.configure(settings,front:false)
+        let input = try buffer(pattern(width:360,height:640),renderer:renderer)
+        let first = try processor.process(buffer:input,hostTime:1)
+        let anchor = Point2(0.3,0.65)
+        let source = first.plan.outputToSource(Point2(anchor.x*first.plan.output.width,(1-anchor.y)*first.plan.output.height))
+        processor.setZoom(3,atUIKit:anchor)
+        let second = try processor.process(buffer:input,hostTime:1.04)
+        let mapped = second.plan.sourceToOutput(source)
+        XCTAssertEqual(mapped.x,anchor.x*second.plan.output.width,accuracy:0.001)
+        XCTAssertEqual(mapped.y,(1-anchor.y)*second.plan.output.height,accuracy:0.001)
+        let preview = try XCTUnwrap(processor.preview.snapshot())
+        XCTAssertEqual(preview.image.extent,second.image.extent)
+        XCTAssertEqual(preview.plan.center,second.plan.center)
+        XCTAssertEqual(pixel(preview.image,Point2(300,400),renderer:renderer),pixel(second.image,Point2(300,400),renderer:renderer))
+    }
+    private func trackingImage(dx:Double,dy:Double) -> CIImage {
+        let bounds = CGRect(x:0,y:0,width:640,height:480)
+        var image = CIImage(color:CIColor(red:0.12,green:0.12,blue:0.12)).cropped(to:bounds)
+        let border = CGRect(x:220+dx,y:160+dy,width:120,height:120)
+        image = CIImage(color:.white).cropped(to:border).composited(over:image)
+        for row in 0..<6 {
+            for column in 0..<6 {
+                let value = Double((row*19+column*31+7)%37)/37
+                let color = CIColor(red:value,green:1-value,blue:Double((row+column*2)%5)/5)
+                let tile = CGRect(x:226+dx+Double(column)*18,y:166+dy+Double(row)*18,width:17,height:17)
+                image = CIImage(color:color).cropped(to:tile).composited(over:image)
+            }
+        }
+        return image.cropped(to:bounds)
+    }
+    func testVisionTracksActualTranslatedImageContent() throws {
+        let tracker = SubjectTracker()
+        tracker.seed(normalizedBox:CGRect(x:220.0/640,y:160.0/480,width:120.0/640,height:120.0/480),anchor:Point2(0.3,0.7))
+        for index in 0...4 {
+            tracker.update(image:trackingImage(dx:Double(index)*4,dy:Double(index)*3),time:Double(index)*0.04)
+        }
+        XCTAssertEqual(tracker.state,.locked)
+        let point = try XCTUnwrap(tracker.target)
+        XCTAssertEqual(point.x,296.0/640,accuracy:0.035)
+        XCTAssertEqual(point.y,232.0/480,accuracy:0.035)
+        XCTAssertEqual(tracker.anchor,Point2(0.3,0.7))
+        tracker.reset();XCTAssertNil(tracker.target);XCTAssertEqual(tracker.state,.idle)
+    }
+    private func audioPacket(pts:Double,index:Int) throws -> CMSampleBuffer {
+        let count = 1600
+        var asbd = AudioStreamBasicDescription(mSampleRate:48000,mFormatID:kAudioFormatLinearPCM,
+            mFormatFlags:kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,mBytesPerPacket:4,
+            mFramesPerPacket:1,mBytesPerFrame:4,mChannelsPerFrame:1,mBitsPerChannel:32,mReserved:0)
+        var format: CMAudioFormatDescription?
+        XCTAssertEqual(CMAudioFormatDescriptionCreate(allocator:kCFAllocatorDefault,asbd:&asbd,
+            layoutSize:0,layout:nil,magicCookieSize:0,magicCookie:nil,extensions:nil,formatDescriptionOut:&format),noErr)
+        var block: CMBlockBuffer?
+        XCTAssertEqual(CMBlockBufferCreateWithMemoryBlock(allocator:kCFAllocatorDefault,memoryBlock:nil,
+            blockLength:count*4,blockAllocator:kCFAllocatorDefault,customBlockSource:nil,offsetToData:0,
+            dataLength:count*4,flags:0,blockBufferOut:&block),noErr)
+        let data = (0..<count).map { sample in Float(sin(Double(index*count+sample)*2 * .pi*440/48000)*0.2) }
+        let status = data.withUnsafeBytes { bytes in
+            CMBlockBufferReplaceDataBytes(with:bytes.baseAddress!,blockBuffer:block!,offsetIntoDestination:0,dataLength:bytes.count)
+        }
+        XCTAssertEqual(status,noErr)
+        var timing = CMSampleTimingInfo(duration:CMTime(value:1,timescale:48000),
+            presentationTimeStamp:CMTime(seconds:pts,preferredTimescale:48000),decodeTimeStamp:.invalid)
+        var sampleSize = 4
+        var result: CMSampleBuffer?
+        XCTAssertEqual(CMSampleBufferCreateReady(allocator:kCFAllocatorDefault,dataBuffer:block,formatDescription:format,
+            sampleCount:count,sampleTimingEntryCount:1,sampleTimingArray:&timing,sampleSizeEntryCount:1,
+            sampleSizeArray:&sampleSize,sampleBufferOut:&result),noErr)
+        return try XCTUnwrap(result)
+    }
+    func testMovieContainsProcessedPixelsAndRetimedAudioNotJustPreviewEffects() async throws {
+        let renderer = try makeRenderer()
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("mov")
+        defer { try? FileManager.default.removeItem(at:url) }
+        var settings = CameraSettings();settings.codec = .compatible;settings.videoFraming = .landscape;settings.horizonLock = true
+        let recorder = try MovieRecorder(url:url,settings:settings,renderer:renderer,microphoneAvailable:true)
+        let source = pattern(width:2160,height:3840)
+        let plan = try CropGeometry.plan(source:Size2(2160,3840),output:settings.outputSize,angle:.pi/2,fullTurn:true,reserve:0.97)
+        let processed = renderer.transform(source,plan:plan)
+        for index in 0..<18 {
+            let seconds = 100+Double(index)/30
+            try recorder.appendVideo(processed,sourcePTS:CMTime(seconds:seconds,preferredTimescale:60000))
+            try recorder.appendAudio(audioPacket(pts:seconds,index:index))
+            try await Task.sleep(for:.milliseconds(35))
+        }
+        let finished: URL = try await withCheckedThrowingContinuation { continuation in
+            recorder.finish { result in continuation.resume(with:result) }
+        }
+        XCTAssertEqual(finished,url);XCTAssertGreaterThanOrEqual(recorder.writtenFrames,10)
+        let asset = AVURLAsset(url:url)
+        let duration = try await asset.load(.duration)
+        XCTAssertGreaterThan(duration.seconds,0.3);XCTAssertLessThan(duration.seconds,1)
+        let videos = try await asset.loadTracks(withMediaType:.video)
+        let audios = try await asset.loadTracks(withMediaType:.audio)
+        let video = try XCTUnwrap(videos.first), audio = try XCTUnwrap(audios.first)
+        let size = try await video.load(.naturalSize)
+        XCTAssertEqual(size,CGSize(width:1920,height:1080))
+        let videoRange = try await video.load(.timeRange), audioRange = try await audio.load(.timeRange)
+        XCTAssertEqual(videoRange.start.seconds,0,accuracy:0.001)
+        XCTAssertLessThan(abs(audioRange.start.seconds-videoRange.start.seconds),0.1)
+        XCTAssertGreaterThan(audioRange.duration.seconds,0.3)
+        let reader = try AVAssetReader(asset:asset)
+        let output = AVAssetReaderTrackOutput(track:video,outputSettings:[kCVPixelBufferPixelFormatTypeKey as String:kCVPixelFormatType_32BGRA])
+        reader.add(output);XCTAssertTrue(reader.startReading())
+        let frame = try XCTUnwrap(output.copyNextSampleBuffer())
+        let decoded = CIImage(cvPixelBuffer:try XCTUnwrap(CMSampleBufferGetImageBuffer(frame)))
+        for point in [Point2(200,200),Point2(1700,200),Point2(200,900),Point2(1700,900)] {
+            let actual = pixel(decoded,point,renderer:renderer), expected = pixel(processed,point,renderer:renderer)
+            for channel in 0..<3 { XCTAssertLessThanOrEqual(abs(Int(actual[channel])-Int(expected[channel])),18) }
+        }
+        reader.cancelReading()
+    }
+    func testEmptyMovieCannotBeReportedAsSaved() async throws {
+        let renderer = try makeRenderer()
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("mov")
+        let recorder = try MovieRecorder(url:url,settings:CameraSettings(),renderer:renderer,microphoneAvailable:false)
+        let result: Result<URL,Error> = await withCheckedContinuation { continuation in
+            recorder.finish { continuation.resume(returning:$0) }
+        }
+        if case .success = result { XCTFail("An empty recording must fail.") }
+        XCTAssertFalse(FileManager.default.fileExists(atPath:url.path))
+    }
+    func testProcessedStillHasSameCropAndDoesNotUpscaleToNativePhotoResolution() throws {
+        let renderer = try makeRenderer(), processor = FrameProcessor(motion:MotionService(),renderer:try makeRenderer())
+        var settings = CameraSettings();settings.mode = .photo;settings.horizonLock = false;settings.zoom = 2
+        processor.configure(settings,front:false)
+        let source = pattern(width:1080,height:1920)
+        let frame = try processor.process(buffer:buffer(source,renderer:renderer),hostTime:2)
+        let still = try processor.processPhoto(source,hostTime:2)
+        XCTAssertLessThanOrEqual(still.extent.width,frame.plan.sourceDetail.width+2)
+        XCTAssertLessThanOrEqual(still.extent.height,frame.plan.sourceDetail.height+2)
+        let data = try XCTUnwrap(renderer.context.jpegRepresentation(of:still,colorSpace:renderer.colorSpace,options:[:]))
+        let decoded = try XCTUnwrap(CIImage(data:data,options:[.applyOrientationProperty:true]))
+        XCTAssertEqual(decoded.extent.size,still.extent.size)
+        for n in [Point2(0.2,0.2),Point2(0.8,0.8)] {
+            let a = pixel(still,Point2(n.x*still.extent.width,n.y*still.extent.height),renderer:renderer)
+            let b = pixel(frame.image,Point2(n.x*frame.image.extent.width,n.y*frame.image.extent.height),renderer:renderer)
+            for i in 0..<3 { XCTAssertLessThanOrEqual(abs(Int(a[i])-Int(b[i])),5) }
+        }
+    }
+}

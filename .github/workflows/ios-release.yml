@@ -48,6 +48,8 @@ jobs:
             -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build/Simulator CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             build 2>&1 | tee build/logs/simulator-build.log
+      - name: Execute real iOS rendering, Vision and movie/audio tests
+        run: bash Scripts/test_simulator.sh
       - name: Build and verify unsigned device IPA
         run: bash Scripts/build_unsigned.sh
       - name: Upload verified IPA artifacts
@@ -75,7 +77,7 @@ jobs:
           Commit: ${GITHUB_SHA}
           Build: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 
-          Automated gates: geometry/motion/timeline regression tests; simulator compilation; Release ARM64 compilation; IPA structure, platform, privacy and unsigned Mach-O verification.
+          Automated gates: geometry/motion/timeline regression tests; simulator compilation; executed iOS pixel/Vision/movie/audio tests; Release ARM64 compilation; IPA structure, platform, privacy and unsigned Mach-O verification.
 
           Physical-device stabilization quality, roll-axis calibration, low-light blur and sustained thermal performance still require the checks in Docs/DEVICE_TESTS.md. This is not a claim of Samsung/Apple image-quality parity.
           EOF

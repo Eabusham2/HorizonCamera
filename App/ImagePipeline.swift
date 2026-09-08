@@ -33,7 +33,9 @@ final class ImageRenderer: @unchecked Sendable {
         let transform = CGAffineTransform(a: z*c, b: z*s, c: -z*s, d: z*c,
             tx: plan.output.width/2-z*(c*plan.center.x-s*plan.center.y),
             ty: plan.output.height/2-z*(s*plan.center.x+c*plan.center.y))
-        return image.transformed(by: transform).cropped(to: CGRect(x: 0, y: 0,
+        // Extend edge texels only for the resampling filter footprint. Geometry
+        // still constrains the entire output to the real sensor image.
+        return image.clampedToExtent().transformed(by: transform).cropped(to: CGRect(x: 0, y: 0,
             width: plan.output.width, height: plan.output.height))
     }
     func filter(_ image: CIImage, _ filter: CaptureFilter) -> CIImage {
