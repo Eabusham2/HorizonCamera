@@ -1,0 +1,95 @@
+name: Build and release unsigned iOS IPA
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths-ignore: ['**.md', 'Docs/**', '.gitignore']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish the verified unsigned IPA to GitHub Releases
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.0.1.app/Contents/Developer
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Toolchain and metadata
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          swift --version
+          mkdir -p build/logs
+          python3 Scripts/generate_project.py
+          plutil -lint App/Info.plist App/PrivacyInfo.xcprivacy HorizonCamera.xcodeproj/project.pbxproj
+      - name: Core regression tests
+        run: |
+          set -euo pipefail
+          swift test --parallel 2>&1 | tee build/logs/core-tests.log
+      - name: Compile iOS simulator app
+        run: |
+          set -euo pipefail
+          xcodebuild -project HorizonCamera.xcodeproj -scheme HorizonCamera \
+            -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/Simulator CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tee build/logs/simulator-build.log
+      - name: Build and verify unsigned device IPA
+        run: bash Scripts/build_unsigned.sh
+      - name: Upload verified IPA artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: HorizonCamera-unsigned-${{ github.sha }}
+          path: build/release/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish release
+        if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish_release)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${GITHUB_SHA:0:8}"
+          TAG="build-${GITHUB_RUN_NUMBER}-${SHORT_SHA}"
+          EXTRA=(--prerelease)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then TAG="$GITHUB_REF_NAME"; EXTRA=(); fi
+          cat > build/release-notes.md <<EOF
+          Native Swift camera with sensor-driven Horizon Lock and subject-tracked, off-center Zoom Lock.
+
+          **Unsigned IPA.** Sign it with your own certificate/profile or sideloading tool before installing. No Apple developer secrets are required for this build.
+
+          Commit: ${GITHUB_SHA}
+          Build: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          Automated gates: geometry/motion/timeline regression tests; simulator compilation; Release ARM64 compilation; IPA structure, platform, privacy and unsigned Mach-O verification.
+
+          Physical-device stabilization quality, roll-axis calibration, low-light blur and sustained thermal performance still require the checks in Docs/DEVICE_TESTS.md. This is not a claim of Samsung/Apple image-quality parity.
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" build/release/* --clobber
+          else
+            gh release create "$TAG" build/release/* --target "$GITHUB_SHA" \
+              --title "HorizonCamera 1.0 · build ${GITHUB_RUN_NUMBER}" --notes-file build/release-notes.md "${EXTRA[@]}"
+          fi
+      - name: Retain build logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/logs/
+          if-no-files-found: ignore
+          retention-days: 7
