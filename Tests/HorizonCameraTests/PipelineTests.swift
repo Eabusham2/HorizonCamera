@@ -41,6 +41,16 @@ final class PipelineTests: XCTestCase {
         renderer.render(image,into:result)
         return result
     }
+    private func videoBuffer(_ image:CIImage, renderer:ImageRenderer) throws -> CVPixelBuffer {
+        var value: CVPixelBuffer?
+        let code = CVPixelBufferCreate(kCFAllocatorDefault,Int(image.extent.width),Int(image.extent.height),
+            kCVPixelFormatType_32BGRA,[kCVPixelBufferMetalCompatibilityKey as String:true,
+                                     kCVPixelBufferIOSurfacePropertiesKey as String:[:]] as CFDictionary,&value)
+        XCTAssertEqual(code,kCVReturnSuccess)
+        let result = try XCTUnwrap(value)
+        renderer.renderVideo(image,into:result)
+        return result
+    }
     func testActualCoreImagePixelsFollowTheSharedInverseTransform() throws {
         let renderer = try makeRenderer(), source = pattern(width:400,height:600)
         for angle in [0.0,0.6,Double.pi/2,Double.pi,3*Double.pi/2] {
@@ -178,8 +188,9 @@ final class PipelineTests: XCTestCase {
         reader.add(output);XCTAssertTrue(reader.startReading())
         let frame = try XCTUnwrap(output.copyNextSampleBuffer())
         let decoded = CIImage(cvPixelBuffer:try XCTUnwrap(CMSampleBufferGetImageBuffer(frame)))
+        let expectedVideo = CIImage(cvPixelBuffer:try videoBuffer(processed,renderer:renderer))
         for point in [Point2(200,200),Point2(1700,200),Point2(200,900),Point2(1700,900)] {
-            let actual = pixel(decoded,point,renderer:renderer), expected = pixel(processed,point,renderer:renderer)
+            let actual = pixel(decoded,point,renderer:renderer), expected = pixel(expectedVideo,point,renderer:renderer)
             for channel in 0..<3 { XCTAssertLessThanOrEqual(abs(Int(actual[channel])-Int(expected[channel])),18) }
         }
         reader.cancelReading()
