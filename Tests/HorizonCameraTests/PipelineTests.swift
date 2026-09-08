@@ -212,4 +212,62 @@ final class PipelineTests: XCTestCase {
             for i in 0..<3 { XCTAssertLessThanOrEqual(abs(Int(a[i])-Int(b[i])),5) }
         }
     }
+    func testNativePhotoExtrasAreMutuallyExclusiveAndDisabledByProcessing() {
+        var base = CameraSettings(); base.mode = .photo; base.horizonLock = false; base.zoomLock = false; base.zoom = 1; base.filter = .original; base.photoFraming = .classic
+        var live = base; live.livePhoto = true; live.normalize(changedFrom:base)
+        XCTAssertTrue(live.livePhoto); XCTAssertFalse(live.raw); XCTAssertFalse(live.isProcessedPhoto)
+        var raw = live; raw.raw = true; raw.normalize(changedFrom:live)
+        XCTAssertTrue(raw.raw); XCTAssertFalse(raw.livePhoto)
+        var liveAgain = raw; liveAgain.livePhoto = true; liveAgain.normalize(changedFrom:raw)
+        XCTAssertTrue(liveAgain.livePhoto); XCTAssertFalse(liveAgain.raw)
+        var square = liveAgain; square.photoFraming = .square; square.normalize(changedFrom:liveAgain)
+        XCTAssertTrue(square.isProcessedPhoto); XCTAssertFalse(square.livePhoto); XCTAssertFalse(square.raw)
+    }
+    func testNonClassicPhotoFramingProducesRequestedAspect() throws {
+        let renderer = try makeRenderer(), processor = FrameProcessor(motion:MotionService(),renderer:try makeRenderer())
+        var settings = CameraSettings(); settings.mode = .photo; settings.horizonLock = false; settings.photoFraming = .landscape
+        processor.configure(settings,front:false)
+        let source = pattern(width:1080,height:1920)
+        _ = try processor.process(buffer:buffer(source,renderer:renderer),hostTime:3)
+        let still = try processor.processPhoto(source,hostTime:3)
+        XCTAssertTrue(settings.isProcessedPhoto)
+        XCTAssertEqual(still.extent.width/still.extent.height,16.0/9.0,accuracy:0.01)
+    }
+    func testSmoothedZoomKeepsPinchAnchorFixedAcrossTransition() throws {
+        let renderer = try makeRenderer(), processor = FrameProcessor(motion:MotionService(),renderer:renderer)
+        var settings = CameraSettings(); settings.horizonLock = false; settings.zoomLock = false
+        processor.configure(settings,front:false)
+        let input = try buffer(pattern(width:360,height:640),renderer:renderer)
+        let first = try processor.process(buffer:input,hostTime:1)
+        let anchor = Point2(0.28,0.66)
+        let source = first.plan.outputToSource(Point2(anchor.x*first.plan.output.width,(1-anchor.y)*first.plan.output.height))
+        processor.setZoom(4,atUIKit:anchor)
+        var previous = first.plan.zoom
+        for frameIndex in 1...18 {
+            let frame = try processor.process(buffer:input,hostTime:1+Double(frameIndex)/60)
+            XCTAssertGreaterThanOrEqual(frame.plan.zoom,previous); XCTAssertLessThanOrEqual(frame.plan.zoom,4)
+            let mapped = frame.plan.sourceToOutput(source)
+            XCTAssertEqual(mapped.x,anchor.x*frame.plan.output.width,accuracy:0.02)
+            XCTAssertEqual(mapped.y,(1-anchor.y)*frame.plan.output.height,accuracy:0.02)
+            previous = frame.plan.zoom
+        }
+        XCTAssertEqual(previous,4,accuracy:0.01)
+    }
+    func testVideoRendererUsesRec709ColorSpace() throws {
+        let renderer = try makeRenderer()
+        let name = try XCTUnwrap(renderer.videoColorSpace.name)
+        XCTAssertTrue(CFEqual(name,CGColorSpace.itur_709))
+    }
+    func testPreviewLayoutPreservesPortraitLandscapeAspectAndUIKitOrientation() throws {
+        let bounds = CGSize(width:390,height:844)
+        for image in [CGSize(width:1080,height:1920),CGSize(width:1920,height:1080)] {
+            let rect = PreviewLayout.aspectFit(image:image,in:bounds)
+            XCTAssertEqual(rect.midX,bounds.width/2,accuracy:0.001); XCTAssertEqual(rect.midY,bounds.height/2,accuracy:0.001)
+            XCTAssertEqual(rect.width/rect.height,image.width/image.height,accuracy:0.0001)
+            let ui = CGPoint(x:rect.minX+rect.width*0.25,y:rect.minY+rect.height*0.75)
+            let normalized = try XCTUnwrap(PreviewLayout.normalizedUIKitPoint(ui,image:image,in:bounds))
+            XCTAssertEqual(normalized.x,0.25,accuracy:0.0001); XCTAssertEqual(normalized.y,0.75,accuracy:0.0001)
+            XCTAssertNil(PreviewLayout.normalizedUIKitPoint(CGPoint(x:-1,y:-1),image:image,in:bounds))
+        }
+    }
 }

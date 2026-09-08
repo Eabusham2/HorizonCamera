@@ -125,4 +125,22 @@ final class CoreTests: XCTestCase {
     func testAngleWrapAtPi() {
         XCTAssertEqual(AngleMath.unwrap(-.pi + 0.01, near: .pi - 0.01), .pi + 0.01, accuracy: 1e-10)
     }
+    func testZoomTransitionIsMonotonicAndFrameRateIndependent() throws {
+        func run(_ fps: Double) -> Double {
+            var z = 1.0
+            for _ in 0..<Int(0.25*fps) {
+                let next = ZoomTransition.step(current:z,target:4,deltaTime:1/fps)
+                XCTAssertGreaterThanOrEqual(next,z); XCTAssertLessThanOrEqual(next,4); z = next
+            }
+            return z
+        }
+        XCTAssertEqual(run(30),4,accuracy:0.01); XCTAssertEqual(run(120),4,accuracy:0.01)
+        var down = 4.0
+        for _ in 0..<20 { let next = ZoomTransition.step(current:down,target:1,deltaTime:1/60); XCTAssertLessThanOrEqual(next,down); XCTAssertGreaterThanOrEqual(next,1); down = next }
+        XCTAssertEqual(down,1,accuracy:0.01)
+    }
+    func testCropPlanRecordsRequestedZoom() throws {
+        let p = try CropGeometry.plan(source:Size2(1080,1920),output:Size2(1080,1920),angle:0.3,zoom:2.25,fullTurn:true,reserve:0.95)
+        XCTAssertEqual(p.zoom,2.25,accuracy:1e-12)
+    }
 }

@@ -153,12 +153,19 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         let fps = settings.captureFPS
         let targetWidth = settings.mode == .slowMotion ? 1920 :
             ((settings.horizonLock || settings.zoomLock || settings.resolution == .ultraHD) ? 3840 : 1920)
+        func maxPhotoArea(_ format: AVCaptureDevice.Format) -> Int64 {
+            format.supportedMaxPhotoDimensions.map { Int64($0.width)*Int64($0.height) }.max() ?? 0
+        }
         let eligible = device.formats.filter { f in
             let d = CMVideoFormatDescriptionGetDimensions(f.formatDescription)
             return d.width >= 1280 && d.height >= 720 &&
                 f.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= Double(fps) && $0.maxFrameRate >= Double(fps) }
         }
         let sorted = eligible.sorted { a,b in
+            if settings.mode == .photo {
+                let ap = maxPhotoArea(a), bp = maxPhotoArea(b)
+                if ap != bp { return ap > bp }
+            }
             func score(_ f: AVCaptureDevice.Format) -> Double {
                 let d = CMVideoFormatDescriptionGetDimensions(f.formatDescription)
                 return abs(Double(d.width)-Double(targetWidth))*2 + abs(Double(d.height)-Double(targetWidth)*9/16)
@@ -167,7 +174,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
         guard let format = sorted.first else { throw CameraFailure.message("This lens does not support \(fps) fps. Choose another lens or a lower frame rate.") }
         let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-        if settings.resolution == .ultraHD && settings.mode != .slowMotion && dimensions.width < 3840 {
+        if settings.mode != .photo && settings.resolution == .ultraHD && settings.mode != .slowMotion && dimensions.width < 3840 {
             throw CameraFailure.message("4K at this frame rate is not supported by this lens.")
         }
         let input = try AVCaptureDeviceInput(device: device)
@@ -231,8 +238,8 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 }
             }
             photoOutput.isLivePhotoCaptureEnabled = photoOutput.isLivePhotoCaptureSupported &&
-                settings.mode == .photo && settings.livePhoto && !settings.isProcessedPhoto
-            if photoOutput.isAppleProRAWSupported { photoOutput.isAppleProRAWEnabled = settings.raw && !settings.isProcessedPhoto }
+                settings.mode == .photo && settings.livePhoto && !settings.raw && !settings.isProcessedPhoto
+            if photoOutput.isAppleProRAWSupported { photoOutput.isAppleProRAWEnabled = settings.raw && !settings.livePhoto && !settings.isProcessedPhoto }
             session.commitConfiguration()
         } catch { session.commitConfiguration(); throw error }
         try applyControls(settings, device: device)
@@ -262,7 +269,11 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         capabilities.supports4K = device.formats.contains { CMVideoFormatDescriptionGetDimensions($0.formatDescription).width >= 3840 }
         capabilities.supports60 = device.formats.contains { $0.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= 60 } }
         capabilities.supports120 = device.formats.contains { $0.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= 120 } }
-        capabilities.sourceDescription = "\(dimensions.width)×\(dimensions.height) sensor stream · \(fps) fps"
+        if settings.mode == .photo, let still = format.supportedMaxPhotoDimensions.max(by: { Int64($0.width)*Int64($0.height) < Int64($1.width)*Int64($1.height) }) {
+            capabilities.sourceDescription = "\(dimensions.width)×\(dimensions.height) preview · still up to \(still.width)×\(still.height)"
+        } else {
+            capabilities.sourceDescription = "\(dimensions.width)×\(dimensions.height) sensor stream · \(fps) fps"
+        }
         reportedCapabilities = capabilities
         DispatchQueue.main.async { [weak self] in self?.onCapabilities?(capabilities,settings) }
     }
@@ -373,14 +384,14 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 let config = configuration
                 let codec: AVVideoCodecType = config.codec == .efficient && photoOutput.availablePhotoCodecTypes.contains(.hevc) ? .hevc : .jpeg
                 let settings: AVCapturePhotoSettings
-                if config.raw && !config.isProcessedPhoto, let raw = photoOutput.availableRawPhotoPixelFormatTypes.first {
+                if config.raw && !config.livePhoto && !config.isProcessedPhoto, let raw = photoOutput.availableRawPhotoPixelFormatTypes.first {
                     settings = AVCapturePhotoSettings(rawPixelFormatType:raw,processedFormat:[AVVideoCodecKey:codec])
                 } else { settings = AVCapturePhotoSettings(format:[AVVideoCodecKey:codec]) }
                 settings.photoQualityPrioritization = .quality
                 settings.maxPhotoDimensions = photoOutput.maxPhotoDimensions
                 if device.hasFlash { settings.flashMode = config.flash.avMode }
                 var liveURL: URL?
-                if config.livePhoto && !config.isProcessedPhoto && photoOutput.isLivePhotoCaptureEnabled {
+                if config.livePhoto && !config.raw && !config.isProcessedPhoto && photoOutput.isLivePhotoCaptureEnabled {
                     liveURL = try MediaFiles.newURL(extension:"mov"); settings.livePhotoMovieFileURL = liveURL
                 }
                 let id = settings.uniqueID
@@ -425,7 +436,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             try raw.write(to:rawURL!,options:.atomic)
         }
         return MediaDraft(url:url,liveMovie:packet.liveMovie,raw:rawURL,
-            summary:packet.settings.isProcessedPhoto ? "Processed photo · same lock/crop as preview" : "Native full-resolution photo")
+            summary:packet.settings.isProcessedPhoto ? "Processed photo · same lock/crop as preview" : "Native maximum-quality photo")
     }
     private func hostTime(for pts: CMTime) -> Double {
         guard pts.isValid && !pts.isIndefinite else { return CMClockGetTime(CMClockGetHostTimeClock()).seconds }

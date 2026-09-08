@@ -28,6 +28,7 @@ public struct CropPlan: Sendable {
     public let source: Size2
     public let output: Size2
     public let angle: Double
+    public let zoom: Double
     public let scale: Double
     public let center: Point2
     public let wasClamped: Bool
@@ -79,11 +80,23 @@ public enum CropGeometry {
         guard desired.x.isFinite, desired.y.isFinite else { throw GeometryError.invalidInput }
         let center = Point2(clamp(desired.x, half.x, source.width - half.x),
                             clamp(desired.y, half.y, source.height - half.y))
-        return CropPlan(source: source, output: output, angle: angle, scale: scale,
+        return CropPlan(source: source, output: output, angle: angle, zoom: zoom, scale: scale,
                         center: center, wasClamped: (center - desired).length > 0.25,
                         halfFootprint: half)
     }
     public static func clamp(_ value: Double, _ lo: Double, _ hi: Double) -> Double {
         min(max(value, lo), max(lo, hi))
+    }
+}
+
+/// Frame-rate-independent logarithmic zoom transition.
+public enum ZoomTransition {
+    public static func step(current: Double, target: Double, deltaTime: Double, maxOctavesPerSecond: Double = 10) -> Double {
+        guard current.isFinite, target.isFinite, deltaTime.isFinite, maxOctavesPerSecond.isFinite, current >= 1, target >= 1, deltaTime > 0, maxOctavesPerSecond > 0 else { return current }
+        if abs(current-target) < 1e-9 { return target }
+        let from = log2(current), to = log2(target), limit = maxOctavesPerSecond*deltaTime
+        let next = from + min(max(to-from,-limit),limit)
+        let value = pow(2,next)
+        return target > current ? min(value,target) : max(value,target)
     }
 }

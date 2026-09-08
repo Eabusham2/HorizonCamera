@@ -92,9 +92,9 @@ import Combine
     }
     func change(_ edit: (inout CameraSettings) -> Void) {
         guard canConfigure else { return }
-        var next = settings; edit(&next)
-        next.zoom = min(max(next.zoom,1),12)
-        if next.isProcessedPhoto { next.livePhoto = false; next.raw = false }
+        let old = settings
+        var next = old; edit(&next)
+        next.normalize(changedFrom: old)
         settings = next
         settingsTask?.cancel()
         settingsTask = Task { [weak self] in

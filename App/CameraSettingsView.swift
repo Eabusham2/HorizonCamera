@@ -56,7 +56,7 @@ struct CameraSettingsView: View {
                         .disabled(!model.capabilities.livePhoto || model.settings.isProcessedPhoto)
                     Toggle("RAW + processed photo",isOn:model.binding(\.raw))
                         .disabled(!model.capabilities.raw || model.settings.isProcessedPhoto)
-                    Text("Native Live Photos and RAW are available only with both locks off, digital zoom at 1×, Original filter, and 3:4 framing. Their original sensor data and paired video are not silently substituted for stabilized output. Native full-resolution stills are used when no processing is requested.")
+                    Text("Native Live Photos and RAW are available only with both locks off, digital zoom at 1×, Original filter, and 3:4 framing. RAW and Live Photo are mutually exclusive; enabling one turns the other off. Their original sensor data and paired video are not silently substituted for stabilized output. Native maximum-quality stills are used when no processing is requested.")
                         .font(.caption).foregroundStyle(.secondary)
                     Picker("Filter",selection:model.binding(\.filter)) {
                         ForEach(CaptureFilter.allCases) { Text($0.rawValue).tag($0) }

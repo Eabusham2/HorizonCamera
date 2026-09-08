@@ -78,6 +78,14 @@ struct CameraSettings: Codable, Equatable {
     var captureFPS: Int { mode == .slowMotion ? 120 : fps }
     var outputSize: Size2 { framing.size(longEdge: mode == .slowMotion ? 1920 : resolution.longEdge) }
     var reserve: Double { zoomLock ? 0.80 : (horizonLock ? 0.97 : 1) }
+    mutating func normalize(changedFrom old: CameraSettings) {
+        zoom = min(max(zoom,1),12)
+        if isProcessedPhoto {
+            livePhoto = false; raw = false
+        } else if livePhoto && raw {
+            if raw != old.raw { livePhoto = false } else { raw = false }
+        }
+    }
     func requiresCaptureReconfiguration(comparedTo old: CameraSettings) -> Bool {
         mode != old.mode || resolution != old.resolution || captureFPS != old.captureFPS ||
         horizonLock != old.horizonLock || zoomLock != old.zoomLock || livePhoto != old.livePhoto ||

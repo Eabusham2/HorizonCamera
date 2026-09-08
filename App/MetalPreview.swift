@@ -2,6 +2,20 @@ import SwiftUI
 import MetalKit
 import CoreImage
 
+struct PreviewLayout {
+    static func aspectFit(image: CGSize, in bounds: CGSize) -> CGRect {
+        guard image.width > 0, image.height > 0, bounds.width > 0, bounds.height > 0 else { return .zero }
+        let scale = min(bounds.width/image.width,bounds.height/image.height)
+        let size = CGSize(width:image.width*scale,height:image.height*scale)
+        return CGRect(x:(bounds.width-size.width)/2,y:(bounds.height-size.height)/2,width:size.width,height:size.height)
+    }
+    static func normalizedUIKitPoint(_ point: CGPoint, image: CGSize, in bounds: CGSize) -> Point2? {
+        let rect = aspectFit(image:image,in:bounds)
+        guard rect.width > 0, rect.height > 0, rect.contains(point) else { return nil }
+        return Point2((point.x-rect.minX)/rect.width,(point.y-rect.minY)/rect.height)
+    }
+}
+
 struct MetalPreview: UIViewRepresentable {
     let feed: PreviewFeed
     let renderer: ImageRenderer
@@ -44,10 +58,11 @@ struct MetalPreview: UIViewRepresentable {
             if let frame = parent.feed.snapshot() {
                 let source = parent.overview ? frame.overview : frame.image
                 let e = source.extent
-                let scale = min(bounds.width/e.width,bounds.height/e.height)
+                let rect = PreviewLayout.aspectFit(image:e.size,in:bounds.size)
+                let scale = rect.width/e.width
                 let transformed = source.transformed(by:CGAffineTransform(scaleX:scale,y:scale))
-                    .transformed(by:CGAffineTransform(translationX:(bounds.width-e.width*scale)/2,
-                                                       y:(bounds.height-e.height*scale)/2))
+                    .transformed(by:CGAffineTransform(translationX:rect.minX-e.minX*scale,
+                                                       y:rect.minY-e.minY*scale))
                 image = transformed.composited(over:image)
             }
             parent.renderer.context.render(image,to:drawable.texture,commandBuffer:command,bounds:bounds,colorSpace:parent.renderer.colorSpace)
@@ -56,12 +71,7 @@ struct MetalPreview: UIViewRepresentable {
         private func point(_ recognizer: UIGestureRecognizer) -> Point2? {
             guard let view = recognizer.view, let frame = parent.feed.snapshot() else { return nil }
             let size = frame.image.extent.size
-            let scale = min(view.bounds.width/size.width,view.bounds.height/size.height)
-            let rect = CGRect(x:(view.bounds.width-size.width*scale)/2,y:(view.bounds.height-size.height*scale)/2,
-                              width:size.width*scale,height:size.height*scale)
-            let point = recognizer.location(in:view)
-            guard rect.contains(point), rect.width > 0, rect.height > 0 else { return nil }
-            return Point2((point.x-rect.minX)/rect.width,(point.y-rect.minY)/rect.height)
+            return PreviewLayout.normalizedUIKitPoint(recognizer.location(in:view),image:size,in:view.bounds.size)
         }
         @objc func tapped(_ recognizer: UITapGestureRecognizer) {
             if let point = point(recognizer) { parent.tap(point) }

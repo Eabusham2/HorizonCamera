@@ -72,7 +72,7 @@ final class MovieRecorder {
         if result == kCVReturnWouldExceedAllocationThreshold { droppedFrames += 1; return }
         guard result == kCVReturnSuccess, let buffer else { throw CameraFailure.message("Cannot allocate a recording frame (\(result)).") }
         guard let seconds = timeline.accept(sourceTime: sourcePTS.seconds) else { return }
-        renderer.render(image, into: buffer)
+        renderer.renderVideo(image, into: buffer)
         guard adaptor.append(buffer, withPresentationTime: CMTime(seconds: seconds, preferredTimescale: 60000)) else {
             throw writer.error ?? CameraFailure.message("The encoder rejected a video frame.")
         }

@@ -8,7 +8,7 @@ A native **Swift / SwiftUI iPhone camera app** with independent **Horizon Lock**
 
 Open [Releases](https://github.com/Eabusham2/HorizonCamera/releases) and download **HorizonCamera-unsigned.ipa** from a successful build. Its SHA-256 file and `build-info.json` identify the bytes and source commit.
 
-**An unsigned IPA cannot install unchanged on a normal iPhone.** Re-sign it using your own signing certificate/profile or sideloading tool. The build requires no Apple developer secrets and does not bypass iOS signing. This repository is private by default; its release assets require repository access.
+**An unsigned IPA cannot install unchanged on a normal iPhone.** Re-sign it using your own signing certificate/profile or sideloading tool. The build requires no Apple developer secrets and does not bypass iOS signing. The repository and its release assets are public; the IPA still requires your own iOS signing before installation.
 
 ## The two locks
 
@@ -35,7 +35,7 @@ Pinching without Zoom Lock zooms around the pinch location, not always the image
 
 **Not implemented in this build:** Apple's full Night mode fusion pipeline, Portrait depth effects, Cinematic depth recording, Panorama, Apple Photographic Styles, ProRes, Dolby Vision, spatial video, Camera Control hardware integration, lock-screen camera extension or complete stock Camera parity. Some have public APIs; this list means *not implemented*, not *impossible*. There are no fake buttons for those modes.
 
-Live Photos and RAW are native-only: modifying the still while retaining an unmodified paired movie or RAW would not be an honest stabilized capture. Turn both locks off, set digital zoom to 1x, use Original filter and 3:4 photo framing for native extras.
+Live Photos and RAW are native-only and mutually exclusive: enabling one disables the other. Modifying the still while retaining an unmodified paired movie or RAW would not be an honest stabilized capture. Turn both locks off, set digital zoom to 1x, use Original filter and 3:4 photo framing for native extras.
 
 4K denotes the encoded canvas, **not recovered 4K detail**. The app reports available source-crop pixels and warns about upscaling. Stabilization and high digital zoom reduce effective detail. Slo-mo and time-lapse omit audio. Physical-device verification is still needed for exact still/preview field-of-view correspondence, roll calibration and sustained performance.
 

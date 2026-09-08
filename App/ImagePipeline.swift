@@ -22,6 +22,7 @@ final class ImageRenderer: @unchecked Sendable {
     let device: MTLDevice
     let context: CIContext
     let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+    let videoColorSpace = CGColorSpace(name: CGColorSpace.itur_709)!
     init?() {
         guard let device = MTLCreateSystemDefaultDevice() else { return nil }
         self.device = device
@@ -50,6 +51,12 @@ final class ImageRenderer: @unchecked Sendable {
     func render(_ image: CIImage, into buffer: CVPixelBuffer) {
         context.render(image, to: buffer, bounds: image.extent, colorSpace: colorSpace)
     }
+    func renderVideo(_ image: CIImage, into buffer: CVPixelBuffer) {
+        CVBufferSetAttachment(buffer,kCVImageBufferColorPrimariesKey,kCVImageBufferColorPrimaries_ITU_R_709_2,.shouldPropagate)
+        CVBufferSetAttachment(buffer,kCVImageBufferTransferFunctionKey,kCVImageBufferTransferFunction_ITU_R_709_2,.shouldPropagate)
+        CVBufferSetAttachment(buffer,kCVImageBufferYCbCrMatrixKey,kCVImageBufferYCbCrMatrix_ITU_R_709_2,.shouldPropagate)
+        context.render(image,to:buffer,bounds:image.extent,colorSpace:videoColorSpace)
+    }
 }
 
 /// All methods (except PreviewFeed) execute on CaptureEngine.frameQueue.
@@ -63,7 +70,9 @@ final class FrameProcessor {
     private var horizon = HorizonEstimator()
     private var lastAngle = 0.0
     private var manualCenter = Point2(0.5, 0.5)
-    private var pendingPinch: (target: Point2, anchor: Point2)?
+    private var zoomAnchor: (target: Point2, anchor: Point2)?
+    private var renderedZoom = 1.0
+    private var zoomTimestamp: Double?
     private var pendingTarget: Point2?
     private(set) var lastPlan: CropPlan?
     private var frozenAngle: Double?
@@ -75,17 +84,18 @@ final class FrameProcessor {
     init(motion: MotionService, renderer: ImageRenderer) { self.motion = motion; self.renderer = renderer }
     func resetGeometry() {
         horizon.reset(); tracker.reset(); manualCenter = Point2(0.5, 0.5)
-        pendingPinch = nil; pendingTarget = nil; lastPlan = nil; lastAngle = 0
+        zoomAnchor = nil; zoomTimestamp = nil; pendingTarget = nil; lastPlan = nil; lastAngle = 0
+        renderedZoom = settings.zoom
         preview.publish(nil); fpsCount = 0; fpsStart = 0; planHistory.removeAll(); frozenAngle = nil
     }
     func beginRecording() { frozenAngle = lastPlan?.angle }
     func endRecording() { frozenAngle = nil }
     func configure(_ next: CameraSettings, front: Bool) {
-        if self.front != front || settings.framing != next.framing || settings.mirrorSelfie != next.mirrorSelfie {
-            resetGeometry()
-        }
-        if settings.zoomLock != next.zoomLock { tracker.reset(); pendingTarget = nil }
+        let geometryReset = self.front != front || settings.framing != next.framing || settings.mirrorSelfie != next.mirrorSelfie
+        if geometryReset { resetGeometry() }
+        if settings.zoomLock != next.zoomLock { tracker.reset(); pendingTarget = nil; zoomAnchor = nil }
         self.settings = next; self.front = front
+        if geometryReset { renderedZoom = next.zoom; zoomTimestamp = nil }
     }
     /// UIKit tap normalized to TOP-left, converted exactly through the saved render transform.
     func selectTarget(atUIKit point: Point2) { pendingTarget = Point2(point.x, 1-point.y) }
@@ -93,7 +103,7 @@ final class FrameProcessor {
         if let point, let plan = lastPlan, !settings.zoomLock {
             let anchor = Point2(point.x, 1-point.y)
             let source = plan.outputToSource(Point2(anchor.x*plan.output.width, anchor.y*plan.output.height))
-            pendingPinch = (Point2(source.x/plan.source.width, source.y/plan.source.height), anchor)
+            zoomAnchor = (Point2(source.x/plan.source.width, source.y/plan.source.height), anchor)
         }
         settings.zoom = min(max(zoom, 1), 12)
     }
@@ -130,12 +140,17 @@ final class FrameProcessor {
             } else { angle = 0 }
             diagnostics.motionStatus = "Horizon off"
         }
+        if let previous = zoomTimestamp {
+            renderedZoom = ZoomTransition.step(current:renderedZoom,target:settings.zoom,deltaTime:max(0,hostTime-previous))
+        } else { renderedZoom = settings.zoom }
+        zoomTimestamp = hostTime
         var plan = try CropGeometry.plan(source: size, output: settings.outputSize, angle: angle,
-            zoom: settings.zoom, fullTurn: settings.horizonLock, reserve: settings.reserve,
+            zoom: renderedZoom, fullTurn: settings.horizonLock, reserve: settings.reserve,
             requestedCenter: Point2(manualCenter.x*size.width, manualCenter.y*size.height))
-        if let pinch = pendingPinch {
+        if let pinch = zoomAnchor, !settings.zoomLock {
             let c = plan.centerHolding(target: Point2(pinch.target.x*size.width, pinch.target.y*size.height), at: pinch.anchor)
-            manualCenter = Point2(c.x/size.width, c.y/size.height); pendingPinch = nil
+            manualCenter = Point2(c.x/size.width, c.y/size.height)
+            if abs(log2(renderedZoom/settings.zoom)) < 0.002 { zoomAnchor = nil }
         }
         if let target = pendingTarget {
             if settings.zoomLock {
@@ -152,7 +167,7 @@ final class FrameProcessor {
             desired = plan.centerHolding(target: Point2(target.x*size.width, target.y*size.height), at: tracker.anchor)
         }
         plan = try CropGeometry.plan(source: size, output: settings.outputSize, angle: angle,
-            zoom: settings.zoom, fullTurn: settings.horizonLock, reserve: settings.reserve, requestedCenter: desired)
+            zoom: renderedZoom, fullTurn: settings.horizonLock, reserve: settings.reserve, requestedCenter: desired)
         manualCenter = Point2(plan.center.x/size.width, plan.center.y/size.height)
         lastPlan = plan
         planHistory.append((hostTime,plan))
@@ -195,7 +210,7 @@ final class FrameProcessor {
         // Never advertise a full-resolution locked still by merely upscaling it.
         let maxEdge = max(2, Int(max(live.sourceDetail.width,live.sourceDetail.height)*size.width/live.source.width))
         let out = settings.framing.size(longEdge: maxEdge)
-        let p = try CropGeometry.plan(source:size, output:out, angle:angle,zoom:settings.zoom,
+        let p = try CropGeometry.plan(source:size, output:out, angle:angle,zoom:live.zoom,
             fullTurn:settings.horizonLock,reserve:settings.reserve,
             requestedCenter:Point2(live.center.x/live.source.width*size.width,live.center.y/live.source.height*size.height))
         return renderer.filter(renderer.transform(image,plan:p),settings.filter)
