@@ -295,7 +295,7 @@ final class PipelineTests: XCTestCase {
 
     func testPhotographicStyleApproximationChangesSavedPixelsDeterministically() throws {
         let renderer=try makeRenderer(), image=pattern(width:320,height:240)
-        var settings=CameraSettings(); settings.photographicStyle = .richContrast; settings.styleIntensity=1; settings.styleTone=0.2; settings.styleWarmth=-0.25
+        var settings=CameraSettings(); settings.photographicStyle = .richContrast; settings.styleIntensity=1; settings.styleTone=0.2; settings.styleWarmth = -0.25
         let styled=renderer.applyLook(image,settings:settings)
         XCTAssertEqual(styled.extent,image.extent)
         let p=Point2(80,60), original=pixel(image,p,renderer:renderer), changed=pixel(styled,p,renderer:renderer)
