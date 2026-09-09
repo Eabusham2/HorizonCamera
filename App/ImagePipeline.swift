@@ -360,7 +360,7 @@ final class FrameProcessor {
         fpsCount += 1
         if fpsStart == 0 { fpsStart=hostTime }
         if hostTime-fpsStart >= 1 { fps=Double(fpsCount)/(hostTime-fpsStart); fpsStart=hostTime; fpsCount=0 }
-        diagnostics.rollDegrees=lastAngle*180/.pi
+        diagnostics.rollDegrees = lastAngle * 180 / .pi
         diagnostics.trackingStatus = settings.zoomLock ? (previewPlan.wasClamped ? "Edge" : "Locked") : "Off"
         diagnostics.confidence=0; diagnostics.edgeLimited=previewPlan.wasClamped
         diagnostics.detail=capturePlan.sourceDetail; diagnostics.upscaled=capturePlan.upscales

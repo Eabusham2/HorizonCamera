@@ -32,6 +32,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var bracketJobs: [Int64: BracketPhotoCapture] = [:]
     private var notifications: [NSObjectProtocol] = []
     private var movie: MovieRecorder? // frameQueue only
+    private var recordingRestoreSettings: CameraSettings? // frameQueue only
     private var panorama: PanoramaAssembler? // frameQueue only
     private var lastDiagnosticsTime = 0.0
     private var lastSpaceCheck = 0.0
@@ -338,7 +339,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             camera.position == .front || !camera.isVirtualDevice
         }.map { camera -> LensOption in
             let front=camera.position == .front
-            let factor=front ? 1.0 : tan(Double(wideFOV)*.pi/360)/tan(Double(camera.activeFormat.videoFieldOfView)*.pi/360)
+            let factor=front ? 1.0 : tan(Double(wideFOV) * .pi / 360) / tan(Double(camera.activeFormat.videoFieldOfView) * .pi / 360)
             let label=front ? "Front" : (abs(factor-factor.rounded()) < 0.12 ? String(format:"%.0f×",factor) : String(format:"%.1f×",factor))
             return LensOption(id:camera.uniqueID,label:label,name:camera.localizedName,isFront:front,isVirtual:false,factor:max(0.5,factor))
         }.sorted {
@@ -423,9 +424,10 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             action.setActionQueue(sessionQueue) { [weak self] value in
                 guard let self else { return }
                 self.configuration.actionStrength = Double(min(max(value/100,0),1))
-                let snapshot = self.configuration
-                let front = self.videoInput?.device.position == .front
-                self.frameQueue.async { [weak self] in self?.processor.configure(snapshot,front:front,horizontalFOVDegrees:self.videoInput.map { Double($0.device.activeFormat.videoFieldOfView) }) }
+                let snapshot=self.configuration
+                let front=self.videoInput?.device.position == .front
+                let fov=self.videoInput.map { Double($0.device.activeFormat.videoFieldOfView) }
+                self.frameQueue.async { [weak self] in self?.processor.configure(snapshot,front:front,horizontalFOVDegrees:fov) }
                 self.publishControlSettings()
             }
             controls.append(action)
@@ -581,9 +583,9 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 let restore=override == nil ? nil : configuration
                 let front=videoInput?.device.position == .front
                 let fov=videoInput.map { Double($0.device.activeFormat.videoFieldOfView) }
-                recordingRestoreSettings=restore
                 setState(.recording)
                 frameQueue.async { [self] in
+                    recordingRestoreSettings=restore
                     do {
                         if override != nil { processor.configure(settings,front:front,horizontalFOVDegrees:fov) }
                         guard processor.lastPlan != nil else { throw CameraFailure.message("Wait for the camera preview before recording.") }
