@@ -94,7 +94,7 @@ final class AdvancedCameraTests: XCTestCase {
     }
 
     func testOldSettingsJSONMigratesWithoutLosingExistingValues() throws {
-        let old = """{"mode":"VIDEO","zoom":2.5,"grid":false,"horizonLock":false}""".data(using:.utf8)!
+        let old = #"{"mode":"VIDEO","zoom":2.5,"grid":false,"horizonLock":false}"#.data(using:.utf8)!
         let migrated = try XCTUnwrap(CameraModel.decodeSettingsMigrating(old))
         XCTAssertEqual(migrated.mode,.video); XCTAssertEqual(migrated.zoom,2.5); XCTAssertFalse(migrated.grid); XCTAssertFalse(migrated.horizonLock)
         XCTAssertTrue(migrated.scanQRCodes); XCTAssertTrue(migrated.showDetectedText); XCTAssertTrue(migrated.lensCleaningHints)
