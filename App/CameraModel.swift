@@ -82,6 +82,7 @@ import Combine
         if settings.audio && AVCaptureDevice.authorizationStatus(for:.audio) == .notDetermined { microphone = await AVCaptureDevice.requestAccess(for:.audio) }
         if settings.audio && !microphone { settings.audio = false; notice = "Microphone permission is off. Videos will be silent." }
         guard UIApplication.shared.applicationState == .active else { return }
+        if settings.includeLocationMetadata { CaptureLocation.shared.request() }
         engine.start(settings:settings,microphoneAllowed:microphone)
     }
 
@@ -105,6 +106,7 @@ import Combine
         let old = settings
         var next = old; edit(&next)
         next.normalize(changedFrom: old)
+        if next.includeLocationMetadata && !old.includeLocationMetadata { CaptureLocation.shared.request() }
         settings = next
         settingsTask?.cancel()
         settingsTask = Task { [weak self] in
@@ -136,7 +138,9 @@ import Combine
 
     func flipCamera() {
         let front = capabilities.lenses.first(where: { $0.id == capabilities.selectedLens })?.isFront ?? false
-        if let target = capabilities.lenses.first(where: { $0.isFront != front && ($0.label == "1×" || $0.isFront) }) ?? capabilities.lenses.first(where: { $0.isFront != front }) { selectLens(target) }
+        if let target = capabilities.lenses.first(where: { $0.isFront != front && ($0.isVirtual || $0.isFront) }) ??
+            capabilities.lenses.first(where: { $0.isFront != front && $0.label == "1×" }) ??
+            capabilities.lenses.first(where: { $0.isFront != front }) { selectLens(target) }
     }
 
     func zoom(_ value: Double, at anchor: Point2? = nil) {

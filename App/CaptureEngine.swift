@@ -140,12 +140,14 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
     }
     private func discover() {
-        devices = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInUltraWideCamera, .builtInWideAngleCamera, .builtInTelephotoCamera],
+        devices = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera,
+            .builtInUltraWideCamera, .builtInWideAngleCamera, .builtInTelephotoCamera],
             mediaType: .video, position: .unspecified).devices
     }
     private func configure(_ settings: CameraSettings, selected id: String?) throws {
         if devices.isEmpty { discover() }
         guard let device = devices.first(where: { $0.uniqueID == id }) ??
+                devices.first(where: { $0.position == .back && $0.isVirtualDevice }) ??
                 devices.first(where: { $0.position == .back && $0.deviceType == .builtInWideAngleCamera }) ?? devices.first else {
             throw CameraFailure.message("No camera is available. A physical iPhone is required to capture.")
         }
@@ -261,9 +263,13 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         capabilities.lenses = devices.map { camera in
             let front = camera.position == .front
             let factor = tan(Double(wideFOV) * .pi/360)/tan(Double(camera.activeFormat.videoFieldOfView) * .pi/360)
-            let label = front ? "Front" : (abs(factor-factor.rounded()) < 0.12 ? String(format:"%.0f×",factor) : String(format:"%.1f×",factor))
-            return LensOption(id:camera.uniqueID,label:label,name:camera.localizedName,isFront:front)
-        }.sorted { $0.isFront == $1.isFront ? $0.label.localizedStandardCompare($1.label) == .orderedAscending : !$0.isFront }
+            let label = front ? "Front" : (camera.isVirtualDevice ? "Auto" : (abs(factor-factor.rounded()) < 0.12 ? String(format:"%.0f×",factor) : String(format:"%.1f×",factor)))
+            return LensOption(id:camera.uniqueID,label:label,name:camera.localizedName,isFront:front,isVirtual:camera.isVirtualDevice)
+        }.sorted {
+            if $0.isFront != $1.isFront { return !$0.isFront }
+            if $0.isVirtual != $1.isVirtual { return $0.isVirtual }
+            return $0.label.localizedStandardCompare($1.label) == .orderedAscending
+        }
         capabilities.selectedLens = device.uniqueID
         capabilities.flash = device.hasFlash; capabilities.torch = device.hasTorch
         capabilities.livePhoto = photoOutput.isLivePhotoCaptureSupported
@@ -461,7 +467,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             guard let image = CIImage(data:data,options:[.applyOrientationProperty:true]) else { throw CameraFailure.message("Cannot decode this still image.") }
             let processed = try processor.processPhoto(image,hostTime:hostTime(for:packet.timestamp))
             if let encoded = CaptureMetadata.encodeProcessed(processed, renderer: renderer,
-                efficient: packet.settings.codec == .efficient, settings: packet.settings) {
+                efficient: packet.settings.codec == .efficient, settings: packet.settings, sourceData: data) {
                 data = encoded.0; suffix = encoded.1
             } else { throw CameraFailure.message("Cannot encode the stabilized photo.") }
         }

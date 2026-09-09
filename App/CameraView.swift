@@ -29,7 +29,7 @@ struct CameraView: View {
     }
     private var topBar: some View {
         HStack {
-            if model.settings.mode == .photo {
+            if model.settings.mode.isPhotoMode {
                 Menu {
                     ForEach(FlashChoice.allCases) { flash in Button(flash.rawValue) { model.change { $0.flash = flash } } }
                 } label: { Image(systemName:model.settings.flash == .off ? "bolt.slash.fill":"bolt.fill") }
@@ -67,7 +67,7 @@ struct CameraView: View {
                     VStack {
                         HStack(alignment:.top) {
                             VStack(alignment:.leading,spacing:4) {
-                                if model.settings.horizonLock { statusPill(model.diagnostics.motionStatus,icon:"horizon") }
+                                if model.settings.horizonLock { statusPill(model.diagnostics.motionStatus,icon:"gyroscope") }
                                 if model.settings.zoomLock { statusPill(model.diagnostics.trackingStatus,icon:"scope") }
                                 if model.settings.aeafLock { Text("AE/AF LOCK").font(.caption2.bold()).foregroundStyle(.yellow) }
                             }
@@ -147,13 +147,15 @@ struct CameraView: View {
                 lockButton("Horizon Lock",enabled:model.settings.horizonLock) { model.change { $0.horizonLock.toggle() } }
                 lockButton("Zoom Lock",enabled:model.settings.zoomLock) { model.change { $0.zoomLock.toggle() } }
             }
-            HStack(spacing:19) {
-                ForEach(CameraMode.allCases) { mode in
-                    Button { model.selectMode(mode) } label: {
-                        Text(mode.rawValue).font(.system(size:11,weight:.semibold))
-                            .foregroundStyle(mode == model.settings.mode ? .yellow:.white.opacity(0.75))
-                    }.disabled(!model.canConfigure || (mode == .slowMotion && !model.capabilities.supports120))
-                }
+            ScrollView(.horizontal, showsIndicators:false) {
+                HStack(spacing:19) {
+                    ForEach(CameraMode.allCases) { mode in
+                        Button { model.selectMode(mode) } label: {
+                            Text(mode.rawValue).font(.system(size:11,weight:.semibold))
+                                .foregroundStyle(mode == model.settings.mode ? .yellow:.white.opacity(0.75))
+                        }.disabled(!model.canConfigure || modeUnavailable(mode))
+                    }
+                }.padding(.horizontal,2)
             }.padding(.top,3)
             HStack {
                 Button { model.openLibrary() } label: { LibraryThumbnail(library:model.library).frame(width:46,height:46).clipShape(RoundedRectangle(cornerRadius:10)) }
@@ -187,11 +189,21 @@ struct CameraView: View {
             }.frame(maxWidth:.infinity).padding(.vertical,10)
                 .foregroundStyle(enabled ? .yellow:.white)
                 .background(enabled ? Color.yellow.opacity(0.13):Color.white.opacity(0.08),in:RoundedRectangle(cornerRadius:10))
-        }.disabled(!model.canConfigure).accessibilityValue(enabled ? "On":"Off")
+        }.disabled(!model.canConfigure || model.settings.usesNativeMoviePipeline || model.settings.mode == .portrait)
+            .accessibilityValue(enabled ? "On":"Off")
     }
     private func statusPill(_ text:String,icon:String) -> some View {
         Label(text,systemImage:icon).font(.system(size:9,weight:.medium))
             .padding(.horizontal,7).padding(.vertical,5).background(.black.opacity(0.6),in:Capsule())
+    }
+    private func modeUnavailable(_ mode: CameraMode) -> Bool {
+        switch mode {
+        case .slowMotion: return model.capabilities.supportedSlowMotionFPS.isEmpty
+        case .cinematic: return !model.capabilities.cinematic
+        case .portrait: return !model.capabilities.depthData
+        case .spatial: return !model.capabilities.spatialVideo
+        default: return false
+        }
     }
     private func time(_ seconds:Double) -> String {
         let s = max(0,Int(seconds)); return String(format:"%02d:%02d:%02d",s/3600,(s%3600)/60,s%60)

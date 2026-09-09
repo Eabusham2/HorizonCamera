@@ -163,6 +163,7 @@ struct CameraSettings: Codable, Equatable {
     var metadataCopyright = ""
     var metadataDescription = ""
     var metadataKeywords = ""
+    var includeLocationMetadata = false
     var horizonTrimDegrees = 0.0
     var motionOffsetMilliseconds = 0.0
 
@@ -257,6 +258,7 @@ struct LensOption: Identifiable, Equatable {
     let label: String
     let name: String
     let isFront: Bool
+    let isVirtual: Bool
 }
 
 struct CameraCapabilities {

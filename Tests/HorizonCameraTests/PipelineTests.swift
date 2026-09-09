@@ -3,6 +3,7 @@ import AVFoundation
 import CoreImage
 import Metal
 import AudioToolbox
+import ImageIO
 @testable import HorizonCamera
 
 final class PipelineTests: XCTestCase {
@@ -281,4 +282,15 @@ final class PipelineTests: XCTestCase {
             XCTAssertNil(PreviewLayout.normalizedUIKitPoint(CGPoint(x:-1,y:-1),image:image,in:bounds))
         }
     }
+    func testProcessedPhotoEncodingPreservesMetadata() throws {
+        let renderer = try makeRenderer()
+        var settings = CameraSettings(); settings.metadataAuthor = "Horizon Tester"; settings.metadataTitle = "Locked frame"
+        let image = pattern(width:320,height:240)
+        let encoded = try XCTUnwrap(CaptureMetadata.encodeProcessed(image,renderer:renderer,efficient:false,settings:settings))
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(encoded.0 as CFData,nil))
+        let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source,0,nil) as? [String:Any])
+        let tiff = try XCTUnwrap(properties[kCGImagePropertyTIFFDictionary as String] as? [String:Any])
+        XCTAssertEqual(tiff[kCGImagePropertyTIFFArtist as String] as? String,"Horizon Tester")
+    }
+
 }

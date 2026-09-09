@@ -221,6 +221,11 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
         append(.quickTimeMetadataCopyright, settings.metadataCopyright)
         append(.quickTimeMetadataDescription, settings.metadataDescription)
         append(.quickTimeMetadataKeywords, settings.metadataKeywords)
+        if settings.includeLocationMetadata, let location = CaptureLocation.shared.current() {
+            append(.quickTimeMetadataLocationISO6709, CaptureLocation.iso6709(location))
+            let accuracy = AVMutableMetadataItem(); accuracy.identifier = .quickTimeMetadataLocationHorizontalAccuracyInMeters
+            accuracy.value = String(format:"%.1f",max(0,location.horizontalAccuracy)) as NSString; items.append(accuracy)
+        }
         let software = AVMutableMetadataItem()
         software.identifier = .quickTimeMetadataSoftware
         software.value = "HorizonCamera" as NSString

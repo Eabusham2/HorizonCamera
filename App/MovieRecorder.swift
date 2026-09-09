@@ -22,6 +22,7 @@ final class MovieRecorder {
         self.url = url; self.settings = settings; self.renderer = renderer
         timeline = RecordingTimeline(cadence: settings.cadence)
         writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        writer.metadata = NativeMovieController.movieMetadata(settings)
         let size = settings.outputSize
         let fps = settings.mode == .slowMotion || settings.mode == .timeLapse ? 30 : settings.fps
         let bitrate = Int(size.width*size.height*Double(fps)*0.13)

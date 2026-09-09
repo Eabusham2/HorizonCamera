@@ -28,6 +28,8 @@
 	<string>Capture photos and videos with Horizon Lock and subject-based Zoom Lock.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Record microphone audio with your videos. Silent recording works without access.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Optionally add your current location to photo and video metadata when you enable Location metadata.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>Use gravity and rotation measurements to keep your recorded horizon level.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

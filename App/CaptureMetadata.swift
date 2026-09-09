@@ -4,8 +4,10 @@ import CoreImage
 import UniformTypeIdentifiers
 
 enum CaptureMetadata {
-    static func photo(_ settings: CameraSettings) -> [String: Any] {
-        var tiff: [String: Any] = [kCGImagePropertyTIFFSoftware as String: "HorizonCamera"]
+    static func photo(_ settings: CameraSettings, base: [String: Any] = [:]) -> [String: Any] {
+        var metadata = base
+        var tiff: [String: Any] = (metadata[kCGImagePropertyTIFFDictionary as String] as? [String: Any]) ?? [:]
+        tiff[kCGImagePropertyTIFFSoftware as String] = "HorizonCamera"
         if !settings.metadataAuthor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { tiff[kCGImagePropertyTIFFArtist as String] = settings.metadataAuthor }
         if !settings.metadataCopyright.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { tiff[kCGImagePropertyTIFFCopyright as String] = settings.metadataCopyright }
         let description = settings.metadataDescription.isEmpty ? settings.metadataTitle : settings.metadataDescription
@@ -17,17 +19,30 @@ enum CaptureMetadata {
         if !settings.metadataDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { iptc[kCGImagePropertyIPTCCaptionAbstract as String] = settings.metadataDescription }
         let keywords = settings.metadataKeywords.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         if !keywords.isEmpty { iptc[kCGImagePropertyIPTCKeywords as String] = keywords }
-        var metadata: [String: Any] = [kCGImagePropertyTIFFDictionary as String: tiff]
-        if !iptc.isEmpty { metadata[kCGImagePropertyIPTCDictionary as String] = iptc }
+        metadata[kCGImagePropertyTIFFDictionary as String] = tiff
+        if !iptc.isEmpty {
+            var existing = (metadata[kCGImagePropertyIPTCDictionary as String] as? [String:Any]) ?? [:]
+            existing.merge(iptc) { _,new in new }
+            metadata[kCGImagePropertyIPTCDictionary as String] = existing
+        }
+        if settings.includeLocationMetadata, let location = CaptureLocation.shared.current() {
+            metadata[kCGImagePropertyGPSDictionary as String] = CaptureLocation.gpsDictionary(location)
+        }
+        metadata[kCGImagePropertyOrientation as String] = 1
+        metadata.removeValue(forKey:kCGImagePropertyPixelWidth as String)
+        metadata.removeValue(forKey:kCGImagePropertyPixelHeight as String)
         return metadata
     }
 
-    static func encodeProcessed(_ image: CIImage, renderer: ImageRenderer, efficient: Bool, settings: CameraSettings) -> (Data, String)? {
+    static func encodeProcessed(_ image: CIImage, renderer: ImageRenderer, efficient: Bool, settings: CameraSettings, sourceData: Data? = nil) -> (Data, String)? {
         guard let cg = renderer.context.createCGImage(image, from: image.extent, format: .RGBA8, colorSpace: renderer.colorSpace) else { return nil }
         let data = NSMutableData()
         let type = efficient ? UTType.heic.identifier : UTType.jpeg.identifier
         guard let destination = CGImageDestinationCreateWithData(data, type as CFString, 1, nil) else { return nil }
-        CGImageDestinationAddImage(destination, cg, photo(settings) as CFDictionary)
+        var base: [String:Any] = [:]
+        if let sourceData, let source = CGImageSourceCreateWithData(sourceData as CFData,nil),
+           let properties = CGImageSourceCopyPropertiesAtIndex(source,0,nil) as? [String:Any] { base = properties }
+        CGImageDestinationAddImage(destination, cg, photo(settings,base:base) as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { return nil }
         return (data as Data, efficient ? "heic" : "jpg")
     }
