@@ -101,12 +101,10 @@ struct CameraView: View {
                     VStack {
                         Spacer()
                         HStack(alignment:.bottom) {
-                            Text(model.detectedText.prefix(3).joined(separator:"
-"))
+                            Text(model.detectedText.prefix(3).joined(separator:"\n"))
                                 .font(.caption2).lineLimit(4).padding(8)
                                 .background(.black.opacity(0.62),in:RoundedRectangle(cornerRadius:8))
-                            Button { UIPasteboard.general.string = model.detectedText.joined(separator:"
-") } label: {
+                            Button { UIPasteboard.general.string = model.detectedText.joined(separator:"\n") } label: {
                                 Image(systemName:"doc.on.doc").padding(8).background(.black.opacity(0.62),in:Circle())
                             }.accessibilityLabel("Copy detected text")
                         }.padding(.horizontal,12).padding(.bottom,10)
