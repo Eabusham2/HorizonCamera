@@ -134,7 +134,7 @@ final class DualCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuffe
             let size=settings.outputSize
             let plan=CropPlan(source:size,output:size,angle:0,zoom:1,scale:1,center:size.center,wasClamped:false,halfFootprint:Point2(size.width/2,size.height/2))
             var diagnostics=FrameDiagnostics(); diagnostics.trackingStatus="Dual Capture"; diagnostics.detail=size
-            preview.publish(PreviewFrame(image:composite,overview:composite,plan:plan,target:nil,trackingGood:true,diagnostics:diagnostics))
+            preview.publish(PreviewFrame(image:composite,recordingImage:composite,overview:composite,plan:plan,recordingPlan:plan,target:nil,trackingGood:true,diagnostics:diagnostics))
         } catch { fail(error) }
     }
 
