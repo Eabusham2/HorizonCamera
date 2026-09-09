@@ -43,6 +43,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     var onMedia: ((Result<MediaDraft, Error>) -> Void)?
     var onCode: ((String) -> Void)?
     var onText: (([String]) -> Void)?
+    var onControlSettings: ((CameraSettings) -> Void)?
     var onError: ((String) -> Void)?
 
     init(renderer: ImageRenderer) {
@@ -93,6 +94,10 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private func report(_ message: String) { DispatchQueue.main.async { [weak self] in self?.onError?(message) } }
     private func deliver(_ result: Result<MediaDraft, Error>) {
         DispatchQueue.main.async { [weak self] in self?.onMedia?(result) }
+    }
+    private func publishControlSettings() {
+        let snapshot = configuration
+        DispatchQueue.main.async { [weak self] in self?.onControlSettings?(snapshot) }
     }
     func start(settings: CameraSettings, microphoneAllowed: Bool) {
         sessionQueue.async { [self] in
@@ -149,6 +154,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                     try applyControls(settings, device: device)
                     configuration = settings
                     frameQueue.sync { [self] in processor.configure(settings, front: device.position == .front) }
+                    if #available(iOS 18.0, *) { syncCameraControlValues(settings) }
                     let capabilities = reportedCapabilities
                     DispatchQueue.main.async { [weak self] in self?.onCapabilities?(capabilities, settings) }
                     return
@@ -277,6 +283,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             session.commitConfiguration()
         } catch { session.commitConfiguration(); throw error }
         try applyControls(settings, device: device)
+        if #available(iOS 18.0, *) { configureCameraControls(settings,device:device) }
         let changedSource = configuration.captureFPS != settings.captureFPS || configuration.resolution != settings.resolution ||
             configuration.horizonLock != settings.horizonLock || configuration.zoomLock != settings.zoomLock ||
             configuration.actionStabilization != settings.actionStabilization || previousDeviceID != device.uniqueID
@@ -320,6 +327,94 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         reportedCapabilities = capabilities
         DispatchQueue.main.async { [weak self] in self?.onCapabilities?(capabilities,settings) }
     }
+    @available(iOS 18.0, *)
+    private func configureCameraControls(_ settings: CameraSettings, device: AVCaptureDevice) {
+        guard session.supportsControls else { return }
+        session.beginConfiguration()
+        for control in session.controls { session.removeControl(control) }
+
+        let zoom = AVCaptureSlider("Zoom", symbolName:"magnifyingglass", in:Float(1)...Float(12), step:0.1)
+        zoom.accessibilityIdentifier = "horizon.zoom"
+        zoom.localizedValueFormat = "%.1f×"
+        zoom.value = Float(settings.zoom)
+        zoom.setActionQueue(sessionQueue) { [weak self] value in
+            guard let self else { return }
+            let zoomValue = min(max(Double(value),1),12)
+            self.configuration.zoom = zoomValue
+            self.frameQueue.async { [weak self] in self?.processor.setZoom(zoomValue,atUIKit:nil) }
+            self.publishControlSettings()
+        }
+
+        var controls: [AVCaptureControl] = [zoom]
+        if device.minExposureTargetBias < device.maxExposureTargetBias {
+            let exposure = AVCaptureSystemExposureBiasSlider(device:device) { [weak self] value in
+                guard let self else { return }
+                self.sessionQueue.async { [weak self] in
+                    guard let self else { return }
+                    self.configuration.exposureEV = value
+                    self.publishControlSettings()
+                }
+            }
+            exposure.isEnabled = !settings.manualExposure && !settings.aeafLock
+            controls.append(exposure)
+        }
+        if device.isLockingFocusWithCustomLensPositionSupported {
+            let focus = AVCaptureSlider("Focus", symbolName:"scope", in:Float(0)...Float(1))
+            focus.accessibilityIdentifier = "horizon.focus"
+            focus.value = settings.manualFocus ? settings.lensPosition : device.lensPosition
+            focus.setActionQueue(sessionQueue) { [weak self, weak device] value in
+                guard let self, let device else { return }
+                do {
+                    try device.lockForConfiguration(); defer { device.unlockForConfiguration() }
+                    device.setFocusModeLocked(lensPosition:min(max(value,0),1),completionHandler:nil)
+                    self.configuration.manualFocus = true
+                    self.configuration.lensPosition = min(max(value,0),1)
+                    self.publishControlSettings()
+                } catch { self.report(error.localizedDescription) }
+            }
+            controls.append(focus)
+        }
+        if settings.actionStabilization {
+            let action = AVCaptureSlider("Action", symbolName:"figure.run", in:Float(0)...Float(100), step:5)
+            action.accessibilityIdentifier = "horizon.action"
+            action.localizedValueFormat = "%.0f%%"
+            action.value = Float(settings.actionStrength*100)
+            action.setActionQueue(sessionQueue) { [weak self] value in
+                guard let self else { return }
+                self.configuration.actionStrength = Double(min(max(value/100,0),1))
+                let snapshot = self.configuration
+                let front = self.videoInput?.device.position == .front
+                self.frameQueue.async { [weak self] in self?.processor.configure(snapshot,front:front) }
+                self.publishControlSettings()
+            }
+            controls.append(action)
+        }
+        for control in controls where session.canAddControl(control) { session.addControl(control) }
+        session.commitConfiguration()
+        session.setControlsDelegate(self,queue:sessionQueue)
+    }
+
+    @available(iOS 18.0, *)
+    private func syncCameraControlValues(_ settings: CameraSettings) {
+        guard session.supportsControls else { return }
+        for control in session.controls {
+            if let exposure = control as? AVCaptureSystemExposureBiasSlider {
+                exposure.isEnabled = !settings.manualExposure && !settings.aeafLock
+                continue
+            }
+            guard let slider = control as? AVCaptureSlider else { continue }
+            switch slider.accessibilityIdentifier {
+            case "horizon.zoom":
+                let value=Float(min(max(settings.zoom,1),12)); if abs(slider.value-value) > 0.001 { slider.value=value }
+            case "horizon.focus":
+                if settings.manualFocus { let value=min(max(settings.lensPosition,0),1); if abs(slider.value-value) > 0.001 { slider.value=value } }
+            case "horizon.action":
+                let value=Float(min(max(settings.actionStrength,0),1)*100); if abs(slider.value-value) > 0.001 { slider.value=value }
+            default: break
+            }
+        }
+    }
+
     private func applyControls(_ settings: CameraSettings, device: AVCaptureDevice) throws {
         try device.lockForConfiguration(); defer { device.unlockForConfiguration() }
         if settings.manualFocus && device.isLockingFocusWithCustomLensPositionSupported {
@@ -354,6 +449,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         let value = min(max(zoom,1),12)
         sessionQueue.async { [self] in
             configuration.zoom = value
+            if #available(iOS 18.0, *) { syncCameraControlValues(configuration) }
             let native = configuration.usesNativeMoviePipeline
             if native, let device = videoInput?.device {
                 do {
@@ -700,4 +796,12 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     func captureOutput(_ output: AVCaptureOutput, didDrop sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         if output === videoOutput { processor.dropped += 1 }
     }
+}
+
+@available(iOS 18.0, *)
+extension CaptureEngine: AVCaptureSessionControlsDelegate {
+    func sessionControlsDidBecomeActive(_ session: AVCaptureSession) {}
+    func sessionControlsWillEnterFullscreenAppearance(_ session: AVCaptureSession) {}
+    func sessionControlsWillExitFullscreenAppearance(_ session: AVCaptureSession) {}
+    func sessionControlsDidBecomeInactive(_ session: AVCaptureSession) {}
 }

@@ -154,7 +154,7 @@ Location metadata is **off by default**. If you enable it, HorizonCamera request
 - Physical lens selection and camera flip.
 - Controls remain portrait-oriented while the camera image may roll for Horizon Lock.
 - Settings persist between launches.
-- Active-app **Camera Control / hardware capture events** on iOS 18+ trigger the current HorizonCamera shutter/record action through SwiftUI capture events.
+- Active-app **Camera Control** support on iOS 18+: a full press triggers the current shutter/record action, while light-press/slide controls expose HorizonCamera Zoom, native exposure bias, Manual Focus, and Action strength when Action Stabilization is enabled. These controls are attached to the live `AVCaptureSession`, not decorative UI.
 
 ## Approximation boundary — what is still not Apple-identical
 
@@ -168,7 +168,7 @@ HorizonCamera now implements close public-API approximations for several stock-C
 - **Dolby Vision:** the public path can request a Dolby Vision 8.4 / HLG-compatible HEVC Main10 stream with automatic HDR metadata insertion; Apple's exact Camera HDR tone mapping/look remains private and physical-device validation is required.
 - **Spatial Photo:** the app produces a two-image stereo HEIC with factory relative rear-camera extrinsics and spatial metadata, but captures from synchronized camera streams rather than Apple's stock still-fusion pipeline.
 - **Dual Capture:** the app really records simultaneous front + rear MultiCam streams and composites them; Apple's iPhone 17 stock UI/heuristics are not cloned.
-- **Camera Control:** active-app hardware capture events are handled. A lock-screen replacement / `LockedCameraCapture` system extension is a separate entitlement/extension architecture and is not claimed here.
+- **Camera Control:** active-app hardware capture events plus light-press/slide capture controls are implemented. A lock-screen launcher / `LockedCameraCapture` system extension remains a separate entitlement/extension architecture and is not claimed here.
 - **Macro Control:** the public virtual camera can switch constituents and physical ultrawide remains selectable, but Apple's private stock Camera macro trigger thresholds/UI are not reproduced.
 - **Live Text:** on-device text recognition/copy and QR actions are implemented; the complete system translation/address/phone/currency action surface remains system UI.
 

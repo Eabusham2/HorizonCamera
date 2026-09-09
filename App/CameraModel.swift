@@ -73,6 +73,11 @@ import Combine
             }
         }
         engine?.onText = { [weak self] lines in self?.detectedText = lines }
+        engine?.onControlSettings = { [weak self] actual in
+            guard let self else { return }
+            self.settings = actual
+            self.persist()
+        }
         engine?.onError = { [weak self] text in if self?.error != text { self?.error = text } }
         engine?.onMedia = { [weak self] result in self?.handleMedia(result) }
         if engine == nil { error = "This device does not provide the Metal renderer required by HorizonCamera." }

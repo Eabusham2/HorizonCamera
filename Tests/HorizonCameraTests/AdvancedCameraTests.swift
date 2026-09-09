@@ -154,6 +154,17 @@ final class AdvancedCameraTests: XCTestCase {
         XCTAssertLessThan(abs(AngleMath.wrap(m.yaw)-Double.pi),0.11)
     }
 
+    func testManualFocusAFAELockAndExposureSettingsRoundTrip() throws {
+        var settings=CameraSettings()
+        settings.manualFocus=true; settings.lensPosition=0.23; settings.aeafLock=true
+        settings.focusRange = .near; settings.smoothAutofocus=false; settings.faceDrivenAutofocus=false
+        settings.exposureEV=1.2; settings.manualExposure=false
+        let decoded=try JSONDecoder().decode(CameraSettings.self,from:JSONEncoder().encode(settings))
+        XCTAssertEqual(decoded,settings)
+        XCTAssertTrue(decoded.manualFocus); XCTAssertEqual(decoded.lensPosition,0.23,accuracy:0.001)
+        XCTAssertTrue(decoded.aeafLock); XCTAssertEqual(decoded.focusRange,.near); XCTAssertEqual(decoded.exposureEV,1.2,accuracy:0.001)
+    }
+
     func testActionTickDefaultsMigrationAndLiveStrengthPolicy() throws {
         let defaults=CameraSettings()
         XCTAssertFalse(defaults.actionStabilization); XCTAssertTrue(defaults.actionNativeAssist); XCTAssertEqual(defaults.actionStrength,0.75,accuracy:0.001)
