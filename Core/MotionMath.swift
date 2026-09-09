@@ -90,3 +90,20 @@ public struct HorizonEstimator: Sendable {
         return HorizonSolution(angle: result, gravityReliable: !nearVertical)
     }
 }
+
+
+public enum FrameLockMath {
+    /// Convert instantaneous camera pitch/yaw into a normalized sensor-window shift.
+    /// The sign matches HorizonCamera's camera-plane convention: panning left moves
+    /// the crop right inside the sensor, and vice versa. This is integrated by the
+    /// frame processor and clamped by CropGeometry at the real sensor edges.
+    public static func delta(rateX: Double, rateY: Double, dt: Double, horizontalFOVDegrees: Double, sourceAspect: Double) -> Point2 {
+        guard rateX.isFinite, rateY.isFinite, dt.isFinite, horizontalFOVDegrees.isFinite,
+              sourceAspect.isFinite, dt > 0, horizontalFOVDegrees > 1, horizontalFOVDegrees < 179, sourceAspect > 0 else { return .zero }
+        let h = horizontalFOVDegrees * .pi / 180
+        let v = 2 * atan(tan(h / 2) / sourceAspect)
+        let dx = -rateY * dt / max(0.001, 2 * tan(h / 2))
+        let dy =  rateX * dt / max(0.001, 2 * tan(v / 2))
+        return Point2(dx, dy)
+    }
+}

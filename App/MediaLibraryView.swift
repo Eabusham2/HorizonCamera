@@ -126,6 +126,7 @@ struct MediaDetailView: View {
                 if item.isVideo {
                     try? AVAudioSession.sharedInstance().setCategory(.playback,mode:.moviePlayback)
                     player = AVPlayer(url:item.url)
+                    player?.play()
                 } else { image = await ThumbnailLoader.load(item.url,video:false,maxSize:2400) }
             }
             .onDisappear { player?.pause();player = nil }

@@ -25,7 +25,7 @@
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
-	<string>Capture photos and videos with Horizon Lock and subject-based Zoom Lock.</string>
+	<string>Capture photos and videos with Horizon Lock and frame-position Zoom Lock.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Record microphone audio with your videos. Silent recording works without access.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>

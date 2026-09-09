@@ -9,6 +9,31 @@ public enum CameraMode: String, CaseIterable, Codable, Identifiable {
     var isMovie: Bool { !isPhotoMode }
     var isNativeMovieMode: Bool { self == .cinematic || self == .spatial }
     var isStandaloneCaptureMode: Bool { self == .panorama || self == .spatialPhoto || self == .dualCapture }
+    var helpText: String {
+        switch self {
+        case .timeLapse: return "Captures frames over time and plays them back at normal video speed."
+        case .slowMotion: return "Captures 120/240 fps and retimes it for slow-motion playback."
+        case .action: return "Legacy Action mode; current builds use the Action stabilization tick in Video."
+        case .cinematic: return "Native Cinematic capture with supported depth/focus metadata and simulated aperture."
+        case .video: return "Real-time video, including 100/120/240 fps when the lens/format can actually record it."
+        case .dualCapture: return "Records front and rear cameras simultaneously on MultiCam-capable iPhones."
+        case .photo: return "Native still photography, including HEIF/JPEG, RAW/ProRAW and computational options."
+        case .portrait: return "Depth-aware portrait capture with supported mattes and adjustable approximation lighting."
+        case .panorama: return "Motion-guided overlapping-frame panorama stitch."
+        case .spatialPhoto: return "Stereo HEIC spatial-photo capture on supported multi-camera devices."
+        case .spatial: return "Native Spatial Video when the active lens/format supports it."
+        }
+    }
+}
+
+enum FrameRateCatalog {
+    static let all: [Double] = [23.976,24,25,29.97,30,48,50,59.94,60,100,120,240]
+    static func label(_ value: Double) -> String {
+        if abs(value-23.976) < 0.02 { return "23.98" }
+        if abs(value-29.97) < 0.02 { return "29.97" }
+        if abs(value-59.94) < 0.02 { return "59.94" }
+        return String(format:"%.0f",value)
+    }
 }
 
 enum Framing: String, CaseIterable, Codable, Identifiable {
@@ -25,9 +50,15 @@ enum Framing: String, CaseIterable, Codable, Identifiable {
 }
 
 enum Resolution: String, CaseIterable, Codable, Identifiable {
-    case hd = "720p", fullHD = "1080p", ultraHD = "4K"
+    case hd = "720p", fullHD = "1080p", action2_8K = "2.8K", ultraHD = "4K", raw17x9 = "17:9 4224×2240", openGate = "Open Gate 4224×3024"
     var id: String { rawValue }
-    var longEdge: Int { switch self { case .hd: return 1280; case .fullHD: return 1920; case .ultraHD: return 3840 } }
+    var longEdge: Int {
+        switch self { case .hd: return 1280; case .fullHD: return 1920; case .action2_8K: return 2816; case .ultraHD: return 3840; case .raw17x9, .openGate: return 4224 }
+    }
+    var isRAWFrameSize: Bool { self == .raw17x9 || self == .openGate }
+    var exactSize: Size2? {
+        switch self { case .action2_8K: return Size2(2816,1584); case .raw17x9: return Size2(4224,2240); case .openGate: return Size2(4224,3024); default: return nil }
+    }
 }
 
 enum FlashChoice: String, CaseIterable, Codable, Identifiable {
@@ -71,9 +102,10 @@ enum DualCaptureLayout: String, CaseIterable, Codable, Identifiable {
 }
 
 enum CodecChoice: String, CaseIterable, Codable, Identifiable {
-    case efficient = "HEVC / HEIF", compatible = "H.264 / JPEG", proResLT = "Apple ProRes 422 LT", proRes422 = "Apple ProRes 422", proResHQ = "Apple ProRes 422 HQ"
+    case efficient = "HEVC / HEIF", compatible = "H.264 / JPEG", proResLT = "Apple ProRes 422 LT", proRes422 = "Apple ProRes 422", proResHQ = "Apple ProRes 422 HQ", proResRAW = "Apple ProRes RAW", proResRAWHQ = "Apple ProRes RAW HQ"
     var id: String { rawValue }
-    var isProRes: Bool { self == .proResLT || self == .proRes422 || self == .proResHQ }
+    var isProRes: Bool { self == .proResLT || self == .proRes422 || self == .proResHQ || isProResRAW }
+    var isProResRAW: Bool { self == .proResRAW || self == .proResRAWHQ }
     var avCodec: AVVideoCodecType {
         switch self {
         case .efficient: return .hevc
@@ -81,6 +113,12 @@ enum CodecChoice: String, CaseIterable, Codable, Identifiable {
         case .proResLT: return .proRes422LT
         case .proRes422: return .proRes422
         case .proResHQ: return .proRes422HQ
+        case .proResRAW:
+            if #available(iOS 26.0, *) { return .proResRAW }
+            return .proRes422
+        case .proResRAWHQ:
+            if #available(iOS 26.0, *) { return .proResRAWHQ }
+            return .proRes422HQ
         }
     }
 }
@@ -137,7 +175,7 @@ struct CameraSettings: Codable, Equatable {
     var videoFraming: Framing = .portrait
     var photoFraming: Framing = .classic
     var resolution: Resolution = .fullHD
-    var fps = 30
+    var fps = 30.0
     var slowMotionFPS = 120
     var autoFPS = false
     var lockCameraSwitching = false
@@ -147,11 +185,12 @@ struct CameraSettings: Codable, Equatable {
     var horizonLock = true
     var zoomLock = false
     var zoom = 1.0
-    var grid = true
+    var grid = false
     var showLevel = true
-    var showOverview = true
+    var showOverview = false
     var scanQRCodes = true
     var showDetectedText = true
+    var smartArtifactGuard = true
     var mirrorSelfie = true
     var photographicStyle: PhotographicStyleApprox = .standard
     var styleIntensity = 1.0
@@ -197,6 +236,11 @@ struct CameraSettings: Codable, Equatable {
     var manualExposure = false
     var iso: Float = 100
     var shutterDenominator = 125.0
+    var shutterAngleMode = false
+    var shutterAngle = 180.0
+    var manualWhiteBalance = false
+    var whiteBalanceKelvin = 5500.0
+    var whiteBalanceTint = 0.0
     var whiteBalanceLock = false
     var audio = true
     var audioMode: AudioCaptureMode = .mono
@@ -209,6 +253,7 @@ struct CameraSettings: Codable, Equatable {
     var autoDeferredPhotoDelivery = true
     var photoQuality: PhotoQualityChoice = .quality
     var cinematicAperture: Float = 4.0
+    var customMetadataEnabled = false
     var metadataTitle = ""
     var metadataAuthor = ""
     var metadataCopyright = ""
@@ -221,10 +266,20 @@ struct CameraSettings: Codable, Equatable {
     var framing: Framing { mode.isPhotoMode ? photoFraming : videoFraming }
     var hasCustomStyle: Bool { photographicStyle != .standard || abs(styleTone) > 0.001 || abs(styleWarmth) > 0.001 }
     var isProcessedPhoto: Bool { mode.isPhotoMode && mode != .panorama && mode != .spatialPhoto && (mode == .portrait || horizonLock || zoomLock || zoom > 1.001 || filter != .original || photoFraming != .classic || hasCustomStyle || portraitLighting != .natural || computationalPhoto != .off) }
-    var captureFPS: Int { mode == .slowMotion ? slowMotionFPS : fps }
-    var outputSize: Size2 { framing.size(longEdge: mode == .slowMotion ? min(1920, resolution.longEdge) : resolution.longEdge) }
-    var reserve: Double { actionStabilization || mode == .action ? max(0.58, 0.86 - actionStrength * 0.22) : (zoomLock ? 0.80 : (horizonLock ? 0.97 : 1)) }
-    var usesNativeMoviePipeline: Bool { mode.isNativeMovieMode || codec.isProRes || colorProfile != .sdr || audioMode != .mono }
+    var captureFPS: Double { mode == .slowMotion ? Double(slowMotionFPS) : fps }
+    var outputSize: Size2 {
+        if let exact=resolution.exactSize { return exact }
+        return framing.size(longEdge:mode == .slowMotion ? min(1920,resolution.longEdge) : resolution.longEdge)
+    }
+    var previewReserve: Double { zoomLock ? 0.80 : (horizonLock ? 0.97 : 1) }
+    var captureReserve: Double {
+        var value = previewReserve
+        if actionStabilization || mode == .action { value = min(value, max(0.58, 0.86 - actionStrength * 0.22)) }
+        if smartArtifactGuard && (horizonLock || zoomLock || actionStabilization) { value *= 0.96 }
+        return max(0.50, value)
+    }
+    var reserve: Double { captureReserve }
+    var usesNativeMoviePipeline: Bool { mode.isNativeMovieMode || codec.isProRes || colorProfile != .sdr || audioMode != .mono || (mode == .video && fps > 60) }
     var usesBracketedPhotoPipeline: Bool { mode == .photo && computationalPhoto.isBracketed }
 
     mutating func normalize(changedFrom old: CameraSettings) {
@@ -234,7 +289,10 @@ struct CameraSettings: Codable, Equatable {
         styleWarmth = min(max(styleWarmth, -1), 1)
         portraitBlurRadius = min(max(portraitBlurRadius, 0), 40)
         actionStrength = min(max(actionStrength, 0), 1)
-        panoramaFeather = min(max(panoramaFeather, 0.1), 0.9)
+        panoramaFeather=min(max(panoramaFeather,0.1),0.9)
+        shutterAngle=min(max(shutterAngle,1.1),360)
+        whiteBalanceKelvin=min(max(whiteBalanceKelvin,2500),10000)
+        whiteBalanceTint=min(max(whiteBalanceTint,-150),150)
         if mode.isPhotoMode {
             if codec.isProRes { codec = .efficient }
             colorProfile = .sdr
@@ -245,16 +303,14 @@ struct CameraSettings: Codable, Equatable {
         if mode == .action {
             mode = .video
             actionStabilization = true
-            horizonLock = true
         }
         if actionStabilization {
             if mode != .video {
-                actionStabilization = false
+                actionStabilization=false
             } else {
-                zoomLock = false
-                codec = .efficient
-                colorProfile = .sdr
-                audioMode = .mono
+                zoomLock=false
+                fps=min(fps,60)
+                if resolution == .ultraHD || resolution.isRAWFrameSize { resolution = .action2_8K }
                 photographicStyle = .standard
                 filter = .original
             }
@@ -273,7 +329,7 @@ struct CameraSettings: Codable, Equatable {
         if mode == .dualCapture {
             horizonLock = false
             zoomLock = false
-            fps = 30
+            fps = 30.0
             if resolution == .ultraHD { resolution = .fullHD }
             codec = .efficient
             colorProfile = .sdr
@@ -328,8 +384,12 @@ struct CameraSettings: Codable, Equatable {
             colorProfile = .sdr
             audioMode = .mono
         }
-        if colorProfile.isLog && !codec.isProRes { codec = .proRes422 }
         if colorProfile == .dolbyVision84 { codec = .efficient }
+        if colorProfile.isLog && codec == .compatible { codec = .efficient }
+        if codec.isProResRAW {
+            colorProfile = .sdr
+            if !resolution.isRAWFrameSize { resolution = .openGate }
+        } else if resolution.isRAWFrameSize { resolution = .ultraHD }
         if mode.isNativeMovieMode || (mode.isMovie && usesNativeMoviePipeline) {
             if videoFraming == .square || videoFraming == .classic { videoFraming = .portrait }
             horizonLock = false
@@ -346,7 +406,7 @@ struct CameraSettings: Codable, Equatable {
 
     func requiresCaptureReconfiguration(comparedTo old: CameraSettings) -> Bool {
         mode != old.mode || resolution != old.resolution || captureFPS != old.captureFPS || autoFPS != old.autoFPS ||
-        horizonLock != old.horizonLock || zoomLock != old.zoomLock || actionStabilization != old.actionStabilization || actionNativeAssist != old.actionNativeAssist || livePhoto != old.livePhoto || raw != old.raw ||
+        horizonLock != old.horizonLock || zoomLock != old.zoomLock || livePhoto != old.livePhoto || raw != old.raw ||
         mirrorSelfie != old.mirrorSelfie || isProcessedPhoto != old.isProcessedPhoto || stabilization != old.stabilization ||
         codec != old.codec || colorProfile != old.colorProfile || audioMode != old.audioMode || windNoiseRemoval != old.windNoiseRemoval ||
         responsiveCapture != old.responsiveCapture || zeroShutterLag != old.zeroShutterLag || fastCapturePrioritization != old.fastCapturePrioritization ||
@@ -372,6 +432,7 @@ struct LensOption: Identifiable, Equatable {
     let name: String
     let isFront: Bool
     let isVirtual: Bool
+    let factor: Double
 }
 
 struct CameraCapabilities {
@@ -397,7 +458,8 @@ struct CameraCapabilities {
     var minEV: Float = -2
     var maxEV: Float = 2
     var supportedResolutions: [Resolution] = [.hd, .fullHD]
-    var supportedFPS: [Int] = [30]
+    var supportedFPS: [Double] = [30]
+    var supportedFPSByResolution: [Resolution:[Double]] = [:]
     var supportedSlowMotionFPS: [Int] = []
     var supportedPhotoResolutionsMP: [Int] = []
     var autoFPS = false
@@ -421,6 +483,8 @@ struct CameraCapabilities {
     var cinematic = false
     var spatialVideo = false
     var proRes = false
+    var proResRAW = false
+    var proResRAWHQ = false
     var hdrHLG = false
     var dolbyVision = false
     var appleLog = false

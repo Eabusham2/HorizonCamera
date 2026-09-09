@@ -152,9 +152,16 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                    (lensID == nil || lensID == previousLens),
                    !settings.requiresCaptureReconfiguration(comparedTo: old) {
                     try applyControls(settings, device: device)
+                    for connection in [videoOutput.connection(with:.video),photoOutput.connection(with:.video)].compactMap({$0}) where connection.isVideoStabilizationSupported {
+                        connection.preferredVideoStabilizationMode = NativeMovieController.preferredStabilization(settings,format:device.activeFormat)
+                    }
                     configuration = settings
-                    frameQueue.sync { [self] in processor.configure(settings, front: device.position == .front) }
-                    if #available(iOS 18.0, *) { syncCameraControlValues(settings) }
+                    frameQueue.sync { [self] in processor.configure(settings, front: device.position == .front, horizontalFOVDegrees: Double(device.activeFormat.videoFieldOfView)) }
+                    if #available(iOS 18.0, *) {
+                        if old.actionStabilization != settings.actionStabilization || old.manualFocus != settings.manualFocus {
+                            configureCameraControls(settings,device:device)
+                        } else { syncCameraControlValues(settings) }
+                    }
                     let capabilities = reportedCapabilities
                     DispatchQueue.main.async { [weak self] in self?.onCapabilities?(capabilities, settings) }
                     return
@@ -167,6 +174,25 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             }
         }
     }
+    private static func frameDuration(for fps: Double) -> CMTime {
+        if abs(fps-23.976) < 0.02 { return CMTime(value:1001,timescale:24000) }
+        if abs(fps-29.97) < 0.02 { return CMTime(value:1001,timescale:30000) }
+        if abs(fps-59.94) < 0.02 { return CMTime(value:1001,timescale:60000) }
+        return CMTime(seconds:1/max(1,fps),preferredTimescale:600_000)
+    }
+    private static func format(_ format: AVCaptureDevice.Format, meets resolution: Resolution) -> Bool {
+        let d=CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+        let long=Int(max(d.width,d.height)), short=Int(min(d.width,d.height))
+        switch resolution {
+        case .hd: return long >= 1280 && short >= 720
+        case .fullHD: return long >= 1920 && short >= 1080
+        case .action2_8K: return long >= 2816 && short >= 1584
+        case .ultraHD: return long >= 3840 && short >= 2160
+        case .raw17x9: return long >= 4224 && short >= 2240
+        case .openGate: return long >= 4224 && short >= 3024
+        }
+    }
+
     private func discover() {
         devices = AVCaptureDevice.DiscoverySession(deviceTypes: [.builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera,
             .builtInUltraWideCamera, .builtInWideAngleCamera, .builtInTelephotoCamera],
@@ -174,23 +200,36 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
     private func configure(_ settings: CameraSettings, selected id: String?) throws {
         if devices.isEmpty { discover() }
-        guard let device = devices.first(where: { $0.uniqueID == id }) ??
-                devices.first(where: { $0.position == .back && $0.isVirtualDevice }) ??
-                devices.first(where: { $0.position == .back && $0.deviceType == .builtInWideAngleCamera }) ?? devices.first else {
+        guard let device = devices.first(where:{$0.uniqueID == id}) ??
+                devices.first(where:{$0.position == .back && $0.deviceType == .builtInWideAngleCamera && !$0.isVirtualDevice}) ??
+                devices.first(where:{$0.position == .back && $0.isVirtualDevice}) ?? devices.first else {
             throw CameraFailure.message("No camera is available. A physical iPhone is required to capture.")
         }
         let previousDeviceID = videoInput?.device.uniqueID
         let fps = settings.captureFPS
-        let targetWidth = settings.mode.isPhotoMode ? 1920 : settings.resolution.longEdge
+        let stabilizationNeedsDetail = !settings.mode.isPhotoMode && settings.captureFPS <= 30 && (settings.horizonLock || settings.zoomLock)
+        let targetWidth = settings.mode.isPhotoMode ? 1920 : (stabilizationNeedsDetail ? max(3840,settings.resolution.longEdge) : settings.resolution.longEdge)
         func maxPhotoArea(_ format: AVCaptureDevice.Format) -> Int64 {
             format.supportedMaxPhotoDimensions.map { Int64($0.width)*Int64($0.height) }.max() ?? 0
         }
         let eligible = device.formats.filter { f in
-            let d = CMVideoFormatDescriptionGetDimensions(f.formatDescription)
-            return d.width >= 1280 && d.height >= 720 &&
-                f.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= Double(fps) && $0.maxFrameRate >= Double(fps) }
+            let d=CMVideoFormatDescriptionGetDimensions(f.formatDescription)
+            let baseOK=max(d.width,d.height) >= 1280 && min(d.width,d.height) >= 720
+            let sizeOK=settings.mode.isPhotoMode || Self.format(f,meets:settings.resolution)
+            return baseOK && sizeOK && f.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= fps+0.001 && $0.maxFrameRate >= fps-0.001 }
+        }
+        func codecPenalty(_ f: AVCaptureDevice.Format) -> Int {
+            let subtype=f.formatDescription.mediaSubType.rawValue
+            if settings.codec.isProResRAW {
+                if #available(iOS 26.0, *), subtype == kCMVideoCodecType_AppleProResRAW || subtype == kCMVideoCodecType_AppleProResRAWHQ { return 0 }
+                return 2
+            }
+            if settings.codec.isProRes { return subtype == kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange ? 0 : 1 }
+            return 0
         }
         let sorted = eligible.sorted { a,b in
+            let ac=codecPenalty(a), bc=codecPenalty(b)
+            if ac != bc { return ac < bc }
             if settings.mode.isPhotoMode {
                 let ap = maxPhotoArea(a), bp = maxPhotoArea(b)
                 if ap != bp { return ap > bp }
@@ -203,8 +242,8 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
         guard let format = sorted.first else { throw CameraFailure.message("This lens does not support \(fps) fps. Choose another lens or a lower frame rate.") }
         let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-        if !settings.mode.isPhotoMode && settings.resolution == .ultraHD && settings.mode != .slowMotion && dimensions.width < 3840 {
-            throw CameraFailure.message("4K at this frame rate is not supported by this lens.")
+        if !settings.mode.isPhotoMode && !Self.format(format,meets:settings.resolution) {
+            throw CameraFailure.message("\(settings.resolution.rawValue) at this frame rate is not supported by this lens.")
         }
         let input = try AVCaptureDeviceInput(device: device)
         session.beginConfiguration()
@@ -247,8 +286,9 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             device.activeFormat = format
             device.automaticallyAdjustsVideoHDREnabled = false
             if device.isVideoHDREnabled { device.isVideoHDREnabled = false }
-            device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
-            device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
+            let frameDuration=Self.frameDuration(for:fps)
+            device.activeVideoMinFrameDuration=frameDuration
+            device.activeVideoMaxFrameDuration=frameDuration
             device.videoZoomFactor = max(1, device.minAvailableVideoZoomFactor)
             if device.isLowLightBoostSupported { device.automaticallyEnablesLowLightBoostWhenAvailable = true }
             if device.isSmoothAutoFocusSupported { device.isSmoothAutoFocusEnabled = true }
@@ -290,19 +330,20 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         configuration = settings
         frameQueue.sync { [self] in
             if changedSource { processor.resetGeometry() }
-            processor.configure(settings, front: device.position == .front)
+            processor.configure(settings, front: device.position == .front, horizontalFOVDegrees: Double(device.activeFormat.videoFieldOfView))
         }
         var capabilities = CameraCapabilities()
         let wideFOV = devices.first(where: { $0.position == .back && $0.deviceType == .builtInWideAngleCamera })?.activeFormat.videoFieldOfView ?? 70
-        capabilities.lenses = devices.map { camera in
-            let front = camera.position == .front
-            let factor = tan(Double(wideFOV) * .pi/360)/tan(Double(camera.activeFormat.videoFieldOfView) * .pi/360)
-            let label = front ? "Front" : (camera.isVirtualDevice ? "Auto" : (abs(factor-factor.rounded()) < 0.12 ? String(format:"%.0f×",factor) : String(format:"%.1f×",factor)))
-            return LensOption(id:camera.uniqueID,label:label,name:camera.localizedName,isFront:front,isVirtual:camera.isVirtualDevice)
+        capabilities.lenses = devices.filter { camera in
+            camera.position == .front || !camera.isVirtualDevice
+        }.map { camera -> LensOption in
+            let front=camera.position == .front
+            let factor=front ? 1.0 : tan(Double(wideFOV)*.pi/360)/tan(Double(camera.activeFormat.videoFieldOfView)*.pi/360)
+            let label=front ? "Front" : (abs(factor-factor.rounded()) < 0.12 ? String(format:"%.0f×",factor) : String(format:"%.1f×",factor))
+            return LensOption(id:camera.uniqueID,label:label,name:camera.localizedName,isFront:front,isVirtual:false,factor:max(0.5,factor))
         }.sorted {
             if $0.isFront != $1.isFront { return !$0.isFront }
-            if $0.isVirtual != $1.isVirtual { return $0.isVirtual }
-            return $0.label.localizedStandardCompare($1.label) == .orderedAscending
+            return $0.factor < $1.factor
         }
         capabilities.selectedLens = device.uniqueID
         capabilities.flash = device.hasFlash; capabilities.torch = device.hasTorch
@@ -322,7 +363,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         if settings.mode.isPhotoMode, let still = format.supportedMaxPhotoDimensions.max(by: { Int64($0.width)*Int64($0.height) < Int64($1.width)*Int64($1.height) }) {
             capabilities.sourceDescription = "\(dimensions.width)×\(dimensions.height) preview · still up to \(still.width)×\(still.height)"
         } else {
-            capabilities.sourceDescription = "\(dimensions.width)×\(dimensions.height) sensor stream · \(fps) fps"
+            capabilities.sourceDescription = "\(dimensions.width)×\(dimensions.height) sensor stream · \(String(format:"%.3g",fps)) fps"
         }
         reportedCapabilities = capabilities
         DispatchQueue.main.async { [weak self] in self?.onCapabilities?(capabilities,settings) }
@@ -384,7 +425,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 self.configuration.actionStrength = Double(min(max(value/100,0),1))
                 let snapshot = self.configuration
                 let front = self.videoInput?.device.position == .front
-                self.frameQueue.async { [weak self] in self?.processor.configure(snapshot,front:front) }
+                self.frameQueue.async { [weak self] in self?.processor.configure(snapshot,front:front,horizontalFOVDegrees:self.videoInput.map { Double($0.device.activeFormat.videoFieldOfView) }) }
                 self.publishControlSettings()
             }
             controls.append(action)
@@ -424,21 +465,29 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             if device.isFocusModeSupported(mode) { device.focusMode = mode }
         }
         if settings.manualExposure && device.isExposureModeSupported(.custom) {
-            let minTime = device.activeFormat.minExposureDuration.seconds
-            let maxTime = min(device.activeFormat.maxExposureDuration.seconds,1/Double(settings.captureFPS))
-            let duration = CMTime(seconds: min(max(1/settings.shutterDenominator,minTime),maxTime), preferredTimescale: 1_000_000_000)
+            let minTime=device.activeFormat.minExposureDuration.seconds
+            let maxTime=min(device.activeFormat.maxExposureDuration.seconds,1/settings.captureFPS)
+            let requested=settings.shutterAngleMode ? (settings.shutterAngle/360.0)/settings.captureFPS : 1/settings.shutterDenominator
+            let duration=CMTime(seconds:min(max(requested,minTime),maxTime),preferredTimescale:1_000_000_000)
             device.setExposureModeCustom(duration: duration, iso: min(max(settings.iso,device.activeFormat.minISO),device.activeFormat.maxISO), completionHandler: nil)
         } else {
             let mode: AVCaptureDevice.ExposureMode = settings.aeafLock ? .locked : .continuousAutoExposure
             if device.isExposureModeSupported(mode) { device.exposureMode = mode }
             device.setExposureTargetBias(min(max(settings.exposureEV,device.minExposureTargetBias),device.maxExposureTargetBias), completionHandler: nil)
         }
-        if settings.whiteBalanceLock && device.isWhiteBalanceModeSupported(.locked) {
-            var gains = device.deviceWhiteBalanceGains
-            gains.redGain = min(max(gains.redGain,1),device.maxWhiteBalanceGain)
-            gains.greenGain = min(max(gains.greenGain,1),device.maxWhiteBalanceGain)
-            gains.blueGain = min(max(gains.blueGain,1),device.maxWhiteBalanceGain)
-            device.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
+        if settings.manualWhiteBalance && device.isWhiteBalanceModeSupported(.locked) {
+            let values=AVCaptureDevice.WhiteBalanceTemperatureAndTintValues(temperature:Float(settings.whiteBalanceKelvin),tint:Float(settings.whiteBalanceTint))
+            var gains=device.deviceWhiteBalanceGains(for:values)
+            gains.redGain=min(max(gains.redGain,1),device.maxWhiteBalanceGain)
+            gains.greenGain=min(max(gains.greenGain,1),device.maxWhiteBalanceGain)
+            gains.blueGain=min(max(gains.blueGain,1),device.maxWhiteBalanceGain)
+            device.setWhiteBalanceModeLocked(with:gains,completionHandler:nil)
+        } else if settings.whiteBalanceLock && device.isWhiteBalanceModeSupported(.locked) {
+            var gains=device.deviceWhiteBalanceGains
+            gains.redGain=min(max(gains.redGain,1),device.maxWhiteBalanceGain)
+            gains.greenGain=min(max(gains.greenGain,1),device.maxWhiteBalanceGain)
+            gains.blueGain=min(max(gains.blueGain,1),device.maxWhiteBalanceGain)
+            device.setWhiteBalanceModeLocked(with:gains,completionHandler:nil)
         } else if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) { device.whiteBalanceMode = .continuousAutoWhiteBalance }
         if device.hasTorch {
             if settings.torch && !settings.mode.isPhotoMode { try device.setTorchModeOn(level: 0.7) }
@@ -522,25 +571,32 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
     }
 
-    func startRecording() {
+    func startRecording(override: CameraSettings? = nil) {
         sessionQueue.async { [self] in
             guard state == .ready, session.isRunning else { return }
             do {
                 try MediaFiles.requireSpace()
-                let url = try MediaFiles.newURL(extension:"mov"), settings = configuration
-                let microphoneAvailable = audioInput != nil && audioOutput.connection(with: .audio) != nil
+                let url=try MediaFiles.newURL(extension:"mov"), settings=override ?? configuration
+                let microphoneAvailable=audioInput != nil && audioOutput.connection(with:.audio) != nil
+                let restore=override == nil ? nil : configuration
+                let front=videoInput?.device.position == .front
+                let fov=videoInput.map { Double($0.device.activeFormat.videoFieldOfView) }
+                recordingRestoreSettings=restore
                 setState(.recording)
                 frameQueue.async { [self] in
                     do {
+                        if override != nil { processor.configure(settings,front:front,horizontalFOVDegrees:fov) }
                         guard processor.lastPlan != nil else { throw CameraFailure.message("Wait for the camera preview before recording.") }
                         if (settings.horizonLock || settings.actionStabilization) && motion.sample(at:CMClockGetTime(CMClockGetHostTimeClock()).seconds) == nil {
                             throw CameraFailure.message("Motion data is not ready. Enable Motion permission or turn sensor-driven stabilization off.")
                         }
                         processor.beginRecording()
-                        movie = try MovieRecorder(url:url,settings:settings,renderer:renderer,microphoneAvailable:microphoneAvailable)
-                        lastSpaceCheck = 0
+                        movie=try MovieRecorder(url:url,settings:settings,renderer:renderer,microphoneAvailable:microphoneAvailable)
+                        lastSpaceCheck=0
                     } catch {
                         processor.endRecording()
+                        if let restore { processor.configure(restore,front:front,horizontalFOVDegrees:fov) }
+                        recordingRestoreSettings=nil
                         sessionQueue.async { [self] in setState(wantedRunning ? .ready : .stopped) }
                         deliver(.failure(error))
                     }
@@ -558,7 +614,11 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 processor.endRecording()
                 sessionQueue.async { [self] in setState(wantedRunning ? .ready : .stopped) }; return
             }
-            movie = nil; processor.endRecording()
+            movie=nil; processor.endRecording()
+            let restore=recordingRestoreSettings; recordingRestoreSettings=nil
+            let front=videoInput?.device.position == .front
+            let fov=videoInput.map { Double($0.device.activeFormat.videoFieldOfView) }
+            if let restore { processor.configure(restore,front:front,horizontalFOVDegrees:fov) }
             recorder.finish { [self] result in
                 let mapped = result.map { url in MediaDraft(url:url,isVideo:true,
                     summary:"\(recorder.settings.mode.rawValue) · \(recorder.settings.resolution.rawValue) output · H:\(recorder.settings.horizonLock ? "on":"off") Z:\(recorder.settings.zoomLock ? "on":"off")") }
@@ -567,6 +627,25 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             }
         }
     }
+    func captureVideoStill() {
+        frameQueue.async { [self] in
+            guard session.isRunning, let frame=processor.preview.snapshot() else { return }
+            do {
+                try MediaFiles.requireSpace()
+                let image = movie == nil ? frame.image : frame.recordingImage
+                var stillSettings=configuration
+                stillSettings.customMetadataEnabled=false
+                stillSettings.includeLocationMetadata=false
+                guard let encoded=CaptureMetadata.encodeProcessed(image,renderer:renderer,efficient:true,settings:stillSettings) else {
+                    throw CameraFailure.message("Could not encode the video still.")
+                }
+                let url=try MediaFiles.newURL(extension:encoded.1)
+                try encoded.0.write(to:url,options:.atomic)
+                deliver(.success(MediaDraft(url:url,isVideo:false,summary:"Still photo captured during video · \(Int(image.extent.width))×\(Int(image.extent.height))")))
+            } catch { deliver(.failure(error)) }
+        }
+    }
+
     private func computationalBiases(_ mode: ComputationalPhotoMode, maxCount: Int) -> [Float] {
         guard maxCount >= 2 else { return [] }
         switch mode {
@@ -767,7 +846,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             do {
                 let frame = try processor.process(buffer:buffer,hostTime:now)
                 if let panorama, let reading = motion.sample(at:now) { panorama.append(frame.overview,yaw:reading.yaw) }
-                try movie?.appendVideo(frame.image,sourcePTS:pts)
+                try movie?.appendVideo(frame.recordingImage,sourcePTS:pts)
                 if movie != nil && now-lastSpaceCheck > 5 {
                     lastSpaceCheck = now; try MediaFiles.requireSpace()
                 }

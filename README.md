@@ -2,7 +2,7 @@
 
 [![iOS build](https://github.com/Eabusham2/HorizonCamera/actions/workflows/ios-release.yml/badge.svg?branch=main)](https://github.com/Eabusham2/HorizonCamera/actions/workflows/ios-release.yml)
 
-A public, native **Swift / SwiftUI iPhone camera** built on AVFoundation, Core Motion, Vision, Core Image and Metal. Its two signature controls are **360° Horizon Lock** and **subject-tracked off-center Zoom Lock**, and it also exposes a broad set of Apple's public camera capture APIs instead of hiding them behind hard-coded presets.
+A public, native **Swift / SwiftUI iPhone camera** built on AVFoundation, Core Motion, Vision, Core Image and Metal. Its two signature controls are **360° Horizon Lock** and an **edge-limited floating-frame Zoom Lock**, and it also exposes a broad set of Apple's public camera capture APIs instead of hiding them behind hard-coded presets.
 
 There is no website wrapper, cloud processing, analytics account, advertising SDK or external Swift package dependency.
 
@@ -20,9 +20,9 @@ Horizon Lock uses timestamp-aligned Core Motion gravity/gyro data to counter-rot
 
 ### Zoom Lock
 
-Zoom Lock uses Vision tracking after you tap a subject. Instead of always centering the crop, it keeps the tracked subject at the **screen position you selected**, allowing an off-center composition to remain stable. The UI reports `Locked`, `Lost` and `Edge`; a lost subject is not silently replaced. A wide-view inset shows the crop's remaining travel.
+Zoom Lock locks the **zoomed framing itself**, not a recognized subject. Core Motion pans the crop in the opposite direction inside the wider sensor image so the selected view stays fixed while you move the phone. When the crop reaches a real sensor edge it pins there and the framing begins following the phone; reverse direction and the crop immediately regains travel until the opposite edge. A tap while Zoom Lock is active re-centers the locked window on that point. The optional wide-view inset is smaller and off by default.
 
-Both custom locks can work together and affect saved custom-pipeline photos/videos. Native Cinematic, Spatial, ProRes/Log and multichannel movie modes deliberately use AVFoundation's native movie pipeline, so custom pixel-transform locks are disabled there instead of showing a fake “on” state.
+Horizon and Zoom Lock are WYSIWYG: their preview uses the same live crop/level geometry that drives compatible custom output. **Action Stabilization** and **Smart Artifact Guard** intentionally use a preview/output split: the live view stays responsive while the saved frame can use extra gyro correction and safety crop. Native Cinematic, Spatial, high-frame-rate, HDR/Log, ProRes and multichannel modes use AVFoundation's native movie path when required; incompatible custom transforms are disabled or grayed rather than faked.
 
 ## Apple Camera / AVFoundation parity
 
@@ -35,7 +35,7 @@ HorizonCamera does **not** claim to clone Apple's proprietary image-processing a
 | Photo | ✅ Native maximum-quality still capture plus optional custom Horizon/Zoom/filter processing |
 | Portrait | ✅ Depth-capable Portrait mode plus **Portrait Lighting approximations** (Natural / Studio / Contour / Stage / Stage Mono / High-Key Mono) driven by the real Portrait Effects matte when available; exact Apple relighting/bokeh is not claimed |
 | Video | ✅ Custom stabilized/video-processing path or native AVFoundation path when advanced native features require it |
-| Action stabilization | ✅ **Independent tick beside Horizon/Zoom** with a live strength slider (75% default). Uses reserved crop + timestamp-aligned three-axis gyro compensation and can layer the strongest native AVFoundation stabilization mode the active format reports; it is not Apple's private stock Action-mode algorithm |
+| Action stabilization | ✅ **Independent tick beside Horizon/Zoom** with a 0–100% slider (75% default). The custom SDR path applies output-only gyro/crop correction; native assist prefers low-latency public stabilization. Action is constrained to the public Apple-like envelope up to 2.8K/60 instead of allowing fake 4K/120 combinations |
 | Dual Capture | ✅ Separate `AVCaptureMultiCamSession` records simultaneous front + rear cameras with PIP / vertical split / horizontal split layouts |
 | Time-lapse | ✅ Frame-sampled time-lapse with configurable interval |
 | Slo-mo | ✅ 120 fps and 240 fps when the active iPhone/lens exposes them, retimed for 30 fps playback |
@@ -69,7 +69,8 @@ HorizonCamera does **not** claim to clone Apple's proprietary image-processing a
 | Sensor-orientation compensation | ✅ iOS 26+ capability-gated, never falsely applied to RAW |
 | Camera calibration data | ✅ Toggle exposed when the active output configuration actually reports calibration delivery support |
 | Flash | ✅ Off / Auto / On |
-| 3 s / 10 s timer | ✅ |
+| 3 s / 5 s / 10 s timer | ✅ Top-screen control |
+| Burst lock | ✅ Repeats native still capture as quickly as the real photo output becomes ready; it never invents intermediate captures |
 | 3:4 / 1:1 / 9:16 / 16:9 framing | ✅ Custom photo path; native Portrait is constrained to compatible framing |
 | Smart HDR-like / Night-like / Detail Fusion | ✅ **Approximation** using real AVFoundation exposure brackets, optional OIS during bracket capture, exposure normalization, fusion/noise reduction/highlight-shadow/detail processing |
 | Photographic Styles | ✅ **Approximation** with Standard / Vibrant / Rich Contrast / Warm / Cool / Rose Gold / Muted plus intensity, tone and warmth controls; not Apple's private rendering recipes |
@@ -81,8 +82,8 @@ AVFoundation requires long pipeline reconfiguration for depth and semantic matte
 
 | Feature | Status |
 |---|---|
-| Resolution | ✅ 720p / 1080p / 4K when supported by the selected camera format |
-| Frame rates | ✅ 24 / 25 / 30 / 50 / 60 / 120 fps choices when exposed; Slo-mo checks 120/240 across device formats |
+| Frame size | ✅ 720p / 1080p / 2.8K Action / 4K, plus 4224×2240 17:9 and 4224×3024 Open Gate for ProRes RAW when the active device/format exposes them |
+| Real-time frame rates | ✅ 23.98 / 24 / 25 / 29.97 / 30 / 48 / 50 / 59.94 / 60 / 100 / 120 / 240 are all represented; unsupported size/lens combinations remain visible but gray. 120/240 in VIDEO remain real-time, distinct from Slo-mo retiming |
 | Auto FPS | ✅ iOS 18+ low-light automatic frame-rate control when supported |
 | Lock Camera | ✅ Locks constituent-camera switching on supported virtual cameras |
 | H.264 | ✅ |
@@ -90,16 +91,22 @@ AVFoundation requires long pipeline reconfiguration for depth and semantic matte
 | Apple ProRes 422 LT | ✅ Native movie path when available |
 | Apple ProRes 422 | ✅ Native movie path when available |
 | Apple ProRes 422 HQ | ✅ Native movie path when available |
+| Apple ProRes RAW / RAW HQ | ✅ Public codec choices on iOS/Xcode versions that expose them, capability-gated against active capture formats/output codecs; unsupported combinations stay gray and recording fails closed rather than falling back |
+| ProRes RAW Open Gate / 17:9 | ✅ Capability-gated frame-size choices; physical iPhone storage/throughput requirements still require device validation |
 | SDR / Rec.709 | ✅ Custom writer renders in Rec.709 and tags output consistently |
 | HDR / HLG | ✅ Capability-gated native color-space/HDR path |
 | Dolby Vision 8.4 / HLG | ✅ Capability-gated native profile requests HEVC Main10 + Rec.2020 HLG and automatic HDR metadata insertion when the output supports those settings; physical-device bitstream/playback validation still applies |
-| Apple Log | ✅ Capability-gated; Log selection forces a compatible ProRes/native path |
+| Apple Log | ✅ Capability-gated native path with compatible HEVC or ProRes; H.264 is grayed/incompatible |
 | Apple Log 2 | ✅ iOS 26+ when the active format reports it |
 | Native video stabilization | ✅ Off / Standard / Cinematic / Cinematic Extended plus iOS 18/26 modes when the format reports support |
-| Action stabilization | ✅ **Tick + 0–100% strength slider**. The custom path adds gyro-derived translational crop compensation and extra stabilization headroom; optional Native stabilization assist requests the strongest public AVFoundation mode reported by the active format |
+| Action stabilization | ✅ **Tick + 0–100% strength slider**. Custom processing is output-only so preview stays low-latency; native assist prefers low-latency/best-supported public stabilization. Action caps incompatible size/FPS choices at an Apple-like 2.8K/60 envelope |
 | Dual Capture | ✅ Simultaneous front/rear MultiCam composite recorded through the same tested movie writer |
 | Orientation/mirroring metadata track | ✅ Native movie output records changes; portrait/landscape rotation is explicitly configured |
-| Native movie digital zoom | ✅ Ramps the **physical capture device**, so saved Cinematic/Spatial/ProRes footage matches the native preview zoom instead of applying a preview-only crop |
+| Native movie digital zoom | ✅ Ramps the **physical capture device**. The main UI uses one transparent logarithmic zoom rail with snap dots for physical lenses instead of separate preset/Auto buttons |
+| Still during video | ✅ Separate recording-time still button writes the current saved video frame at video resolution without stopping the recording |
+| QuickTake-style recording | ✅ Long-press Photo shutter starts video from the live session; lock keeps it recording after release |
+
+**ProRes RAW note:** the public SDK exposes ProRes RAW / RAW HQ codec identifiers and supported iPhones may impose external-storage/throughput requirements. HorizonCamera capability-gates the choices and fails closed if the active native movie output cannot provide the requested codec. Simulator CI cannot certify a phone/storage combination.
 
 **Dolby Vision note:** HorizonCamera now has a separate Dolby Vision 8.4 / HLG-compatible public-API path. It requests HEVC Main10, Rec.2020 HLG and automatic HDR metadata insertion where supported. It still does **not** claim Apple's private Camera tone mapping, ISP decisions, or identical stock-Camera look.
 
@@ -112,10 +119,10 @@ AVFoundation requires long pipeline reconfiguration for depth and semantic matte
 - Face-driven autofocus toggle, configured using Apple's required explicit face-AF state sequence.
 - Autofocus range restriction: Full / Near / Far when supported.
 - Exposure compensation.
-- Manual ISO and shutter duration with camera/format bounds.
-- White-balance lock.
+- Manual ISO plus shutter **speed or angle** with camera/format bounds.
+- Manual white-balance temperature/tint plus white-balance lock.
 - Low-light boost where the device supports it.
-- An **Auto** virtual dual/dual-wide/triple camera option when iOS exposes one, plus physical front / ultrawide / wide / telephoto choices. Virtual cameras can use Apple's public seamless constituent switching/fusion behavior, with a **Lock Camera** control to freeze constituent switching.
+- User-facing lens selection is one continuous zoom rail with snap dots for actual physical cameras. Duplicate virtual-camera `Auto` presets are intentionally hidden. Camera flip remains available.
 
 ### Audio
 
@@ -128,32 +135,31 @@ AVFoundation requires long pipeline reconfiguration for depth and semantic matte
 
 ## Capture metadata
 
-HorizonCamera exposes editable fields for **Title, Author, Copyright, Description and comma-separated Keywords**.
+Custom metadata is **off by default**. When enabled, HorizonCamera exposes editable **Title, Author, Copyright, Description and comma-separated Keywords** fields.
 
-**Native movies** embed QuickTime metadata for title, author, copyright, description, keywords, HorizonCamera software attribution and creation date. Native movie capture also retains AVFoundation orientation/mirroring metadata where supported.
+With custom metadata disabled, native movies keep AVFoundation/camera metadata without HorizonCamera injecting title/author/software fields. When custom metadata is enabled, the requested QuickTime title/author/copyright/description/keywords/software fields are added. Native orientation/mirroring metadata remains AVFoundation-managed where supported.
 
-**Native photos** receive standards-based TIFF/IPTC properties through `AVCapturePhotoSettings.metadata`. **Processed Horizon/Zoom/filter photos are re-encoded with ImageIO and the same metadata is explicitly reattached**, so using the custom stabilization path does not silently erase it. Camera-generated EXIF data remains managed by AVFoundation.
+Native photos preserve AVFoundation camera metadata. **Processed Horizon/Zoom/filter photos copy the source ImageIO metadata before re-encoding**, preserving EXIF/camera properties; custom TIFF/IPTC fields are injected only when Custom metadata is enabled. Processed HEIC/JPEG uses high-quality encoding rather than a low-quality preview export.
 
 Location metadata is **off by default**. If you enable it, HorizonCamera requests When In Use location permission and embeds a recent fix using the standard ImageIO GPS dictionary for photos and ISO-6709 QuickTime metadata for movies. Diagnostics never include coordinates.
 
 ## Viewfinder and camera controls
 
-- Grid and level indicator.
+- Grid (off by default) and level indicator.
 - QR-code detection with tap-to-open for HTTP(S), otherwise tap-to-copy.
-- Live Text detection using Vision with a copy action; it does not pretend to reproduce every system Live Text quick action/translation surface.
+- Live Text detection runs quietly. A small Live Text button appears only when text exists; the text/copy panel opens only after you tap it, closer to the stock Camera interaction.
 - Center Stage toggle on formats that support it.
 - iOS 26 Smart Framing monitor: applies the device's recommended dynamic aspect ratio and zoom when supported.
 - iOS 26 lens-cleaning hints/status using AVFoundation's camera-lens-smudge detector.
 - Pinch-to-point zoom: without Zoom Lock, the point under your fingers remains anchored while the crop zooms.
-- Smooth Zoom Lock transitions.
-- Subject tracking reticle plus `Locked` / `Lost` / `Edge` states.
-- Wide sensor-view inset.
+- Floating-frame Zoom Lock reports `Locked` / `Edge`; it is not dependent on Vision recognizing a subject.
+- Optional compact wide sensor-view inset, off by default.
 - Effective source-crop detail and upscaling warnings.
 - Front-camera mirroring control.
 - Flash / torch controls.
-- Physical lens selection and camera flip.
+- Transparent/logarithmic zoom rail with physical-lens snap dots and camera flip; no duplicate `Auto` lens presets.
 - Controls remain portrait-oriented while the camera image may roll for Horizon Lock.
-- Settings persist between launches.
+- Persistent settings survive relaunch, while the **live zoom always starts at 1×** so a previous zoom/framing position cannot surprise you.
 - Active-app **Camera Control** support on iOS 18+: a full press triggers the current shutter/record action, while light-press/slide controls expose HorizonCamera Zoom, native exposure bias, Manual Focus, and Action strength when Action Stabilization is enabled. These controls are attached to the live `AVCaptureSession`, not decorative UI.
 
 ## Approximation boundary — what is still not Apple-identical
@@ -164,7 +170,7 @@ HorizonCamera now implements close public-API approximations for several stock-C
 - **Photographic Styles / Scene Detection:** HorizonCamera provides tunable style recipes and live/saved rendering, but not Apple's proprietary current-generation style engine or automatic scene decisions.
 - **Portrait Lighting:** the app uses actual Portrait Effects mattes for relighting-style output, but Apple's exact depth refinement, hair/edge segmentation, relighting and bokeh renderer remain private.
 - **Panorama:** PANO performs a real motion-guided feather stitch, but it is not Apple's stock stitcher, exposure optimizer, sweep UI or private geometric correction.
-- **Action Stabilization tick:** independent of the mode strip and adjustable from 0–100% (75% default). It uses reserved crop and timestamp-aligned three-axis gyro compensation; optional native assist layers the strongest publicly reported AVFoundation stabilization mode. Apple's exact stock Action-mode EIS/ISP model remains private.
+- **Action Stabilization tick:** independent of the mode strip and adjustable from 0–100% (75% default). The custom path uses output-only timestamp-aligned gyro/crop correction while the preview remains low-latency; native modes use capability-gated public stabilization. Apple's exact stock Action-mode EIS/ISP model remains private.
 - **Dolby Vision:** the public path can request a Dolby Vision 8.4 / HLG-compatible HEVC Main10 stream with automatic HDR metadata insertion; Apple's exact Camera HDR tone mapping/look remains private and physical-device validation is required.
 - **Spatial Photo:** the app produces a two-image stereo HEIC with factory relative rear-camera extrinsics and spatial metadata, but captures from synchronized camera streams rather than Apple's stock still-fusion pipeline.
 - **Dual Capture:** the app really records simultaneous front + rear MultiCam streams and composites them; Apple's iPhone 17 stock UI/heuristics are not cloned.
@@ -178,7 +184,7 @@ This distinction is deliberate: **implemented** means a real code/capture path e
 
 Captures are written to `Documents/Captures` first and indexed in a local manifest. If the app is interrupted after a file is created but before the index updates, unindexed JPEG/HEIC/DNG/MOV files are recovered on next launch.
 
-Saving to Apple Photos uses **add-only** authorization. Denied Photos access does not delete the local capture; Share/Files remain available. The app asks for Camera and Motion access, optional Microphone access, and optional When In Use Location access only if you turn on Location metadata. It has no account/login requirement and does not upload captures.
+Saving to Apple Photos uses **add-only** authorization. Denied Photos access does not delete the local capture; Share/Files remain available. On first launch the app requests every permission it can legitimately use: **Camera, Microphone, Photos add-only, Location and Motion**. Granting Location does **not** enable location metadata; geotagging remains off until you explicitly turn it on. The app has no account/login requirement and does not upload captures.
 
 ## Build and release gates
 
@@ -203,7 +209,7 @@ GitHub Actions blocks release publication unless all gates succeed:
 1. deterministic project/plist generation + validation;
 2. portable core regressions;
 3. complete iOS simulator compile;
-4. executed iOS tests for rendered pixels, full-turn crop safety, Vision tracking, off-center/smoothed zoom, encoded movie pixels, audio retiming, Rec.709, processed stills and metadata;
+4. executed iOS tests for rendered pixels, full-turn crop safety, floating Zoom Lock edge/reverse behavior, Action/Artifact Guard preview-output separation, Vision utility tracking, encoded movie pixels, audio retiming, Rec.709, processed stills, metadata, expanded formats and settings migration;
 5. Release ARM64 iPhone compilation;
 6. unsigned IPA structure/platform/privacy/Mach-O verification;
 7. artifact upload and GitHub Release publication.
@@ -212,11 +218,11 @@ Pull requests run the checks without publishing a release. Successful `main` pus
 
 ## Architecture
 
-- `Core/` — crop geometry/inverse mapping, horizon estimator, motion interpolation, recording cadence/timeline math.
+- `Core/` — crop geometry/inverse mapping, floating-frame motion math, horizon estimator, motion interpolation, recording cadence/timeline math.
 - `App/CaptureEngine.swift` — serialized AVCaptureSession, physical camera inputs, still output, custom video sample pipeline.
 - `App/AdvancedCameraSupport.swift` — native Cinematic / Spatial / ProRes / advanced audio and AVFoundation capability mapping.
 - `App/CaptureMetadata.swift` — TIFF/IPTC processed/native photo metadata handling.
-- `App/ImagePipeline.swift` — one transform shared by preview, tracking, touch mapping and custom saved output.
+- `App/ImagePipeline.swift` — live Horizon/Zoom preview geometry plus a separate output plan for Action/Smart Artifact Guard, with timestamp-aligned touch and saved-still mapping.
 - `App/MovieRecorder.swift` — custom processed MOV writer with timestamped video/audio.
 - `Tests/` — portable geometry/motion tests plus executed iOS pipeline tests.
 
@@ -230,6 +236,8 @@ See [architecture notes](Docs/ARCHITECTURE.md) and the [physical-device validati
 - [Apple: AVCaptureDevice focus](https://developer.apple.com/documentation/avfoundation/capture-device-focus)
 - [Apple: AVCaptureDevice zoom](https://developer.apple.com/documentation/avfoundation/capture-device-zoom)
 - [Apple: AVCaptureMovieFileOutput](https://developer.apple.com/documentation/avfoundation/avcapturemoviefileoutput)
+- [Apple: Final Cut Camera recording formats](https://support.apple.com/guide/final-cut-camera/change-video-format-settings-dev9c91a25a9/ios)
+- [Blackmagic Design: Blackmagic Camera](https://www.blackmagicdesign.com/products/blackmagiccamera)
 - [Samsung: Camera / Super Steady documentation](https://www.samsung.com/us/support/answer/ANS00092462/)
 
 ## License / contribution note

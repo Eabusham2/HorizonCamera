@@ -6,6 +6,8 @@ final class CaptureLocation: NSObject, CLLocationManagerDelegate, @unchecked Sen
     static let shared = CaptureLocation()
     private let lock = NSLock()
     private var lastLocation: CLLocation?
+    private var authorizationContinuation: CheckedContinuation<Void,Never>?
+    private var startUpdatesAfterAuthorization=false
     private lazy var manager: CLLocationManager = {
         let manager = CLLocationManager()
         manager.delegate = self
@@ -13,20 +15,41 @@ final class CaptureLocation: NSObject, CLLocationManagerDelegate, @unchecked Sen
         return manager
     }()
 
+    func requestAuthorizationOnly() async {
+        if manager.authorizationStatus != .notDetermined { return }
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { continuation.resume(); return }
+                guard self.manager.authorizationStatus == .notDetermined else { continuation.resume(); return }
+                self.authorizationContinuation=continuation
+                self.manager.requestWhenInUseAuthorization()
+            }
+        }
+    }
+
     func request() {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             switch self.manager.authorizationStatus {
-            case .notDetermined: self.manager.requestWhenInUseAuthorization()
-            case .authorizedAlways, .authorizedWhenInUse: self.manager.startUpdatingLocation()
+            case .notDetermined:
+                self.startUpdatesAfterAuthorization=true
+                self.manager.requestWhenInUseAuthorization()
+            case .authorizedAlways, .authorizedWhenInUse:
+                self.manager.startUpdatingLocation()
             default: break
             }
         }
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        if manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse {
+        if manager.authorizationStatus != .notDetermined, let continuation=authorizationContinuation {
+            authorizationContinuation=nil; continuation.resume()
+        }
+        if (manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse), startUpdatesAfterAuthorization {
+            startUpdatesAfterAuthorization=false
             manager.startUpdatingLocation()
+        } else if manager.authorizationStatus != .notDetermined {
+            startUpdatesAfterAuthorization=false
         }
     }
 

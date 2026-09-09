@@ -284,7 +284,7 @@ final class PipelineTests: XCTestCase {
     }
     func testProcessedPhotoEncodingPreservesMetadata() throws {
         let renderer = try makeRenderer()
-        var settings = CameraSettings(); settings.metadataAuthor = "Horizon Tester"; settings.metadataTitle = "Locked frame"
+        var settings = CameraSettings(); settings.customMetadataEnabled = true; settings.metadataAuthor = "Horizon Tester"; settings.metadataTitle = "Locked frame"
         let image = pattern(width:320,height:240)
         let encoded = try XCTUnwrap(CaptureMetadata.encodeProcessed(image,renderer:renderer,efficient:false,settings:settings))
         let source = try XCTUnwrap(CGImageSourceCreateWithData(encoded.0 as CFData,nil))
@@ -359,6 +359,62 @@ final class PipelineTests: XCTestCase {
         XCTAssertLessThan(highPlan.sourceDetail.height,lowPlan.sourceDetail.height)
     }
 
+
+    func testZoomLockFloatsCropToEdgeThenRecoversOnReversePan() throws {
+        let renderer=try makeRenderer(), motion=MotionService(), processor=FrameProcessor(motion:motion,renderer:renderer)
+        var settings=CameraSettings(); settings.mode = .video; settings.horizonLock=false; settings.zoomLock=true; settings.zoom=3; settings.videoFraming = .landscape; settings.resolution = .hd; settings.smartArtifactGuard=false
+        processor.configure(settings,front:false,horizontalFOVDegrees:70)
+        let input=try buffer(pattern(width:1280,height:720),renderer:renderer)
+        motion.injectForTesting(MotionReading(time:1,gx:0,gy:-1,gz:0,rateZ:0,rateX:0,rateY:0))
+        let first=try processor.process(buffer:input,hostTime:1)
+        let startX=first.plan.center.x
+        var edgeFrame=first
+        for index in 1...10 {
+            let time=1+Double(index)*0.02
+            motion.injectForTesting(MotionReading(time:time,gx:0,gy:-1,gz:0,rateZ:0,rateX:0,rateY:4))
+            edgeFrame=try processor.process(buffer:input,hostTime:time)
+        }
+        XCTAssertLessThan(edgeFrame.plan.center.x,startX)
+        XCTAssertTrue(edgeFrame.plan.wasClamped)
+        let pinned=edgeFrame.plan.center.x
+        let forwardTime=1.22
+        motion.injectForTesting(MotionReading(time:forwardTime,gx:0,gy:-1,gz:0,rateZ:0,rateX:0,rateY:4))
+        let stillPinned=try processor.process(buffer:input,hostTime:forwardTime)
+        XCTAssertEqual(stillPinned.plan.center.x,pinned,accuracy:0.5)
+        let reverseTime=1.24
+        motion.injectForTesting(MotionReading(time:reverseTime,gx:0,gy:-1,gz:0,rateZ:0,rateX:0,rateY:-4))
+        let reversing=try processor.process(buffer:input,hostTime:reverseTime)
+        XCTAssertGreaterThan(reversing.plan.center.x,pinned+1)
+        XCTAssertEqual(reversing.target,Point2(0.5,0.5))
+    }
+
+    func testActionAndArtifactGuardAffectRecordingPlanNotLivePreviewPlan() throws {
+        let renderer=try makeRenderer(), motion=MotionService(), processor=FrameProcessor(motion:motion,renderer:renderer)
+        var settings=CameraSettings(); settings.mode = .video; settings.horizonLock=false; settings.zoomLock=false; settings.actionStabilization=true; settings.actionStrength=0.8; settings.videoFraming = .landscape; settings.resolution = .hd; settings.smartArtifactGuard=true
+        processor.configure(settings,front:false,horizontalFOVDegrees:70)
+        let input=try buffer(pattern(width:1280,height:720),renderer:renderer)
+        motion.injectForTesting(MotionReading(time:1,gx:0,gy:-1,gz:0,rateZ:0,rateX:0,rateY:0))
+        _=try processor.process(buffer:input,hostTime:1)
+        motion.injectForTesting(MotionReading(time:1.02,gx:0,gy:-1,gz:0,rateZ:0.2,rateX:1.5,rateY:2.0))
+        let frame=try processor.process(buffer:input,hostTime:1.02)
+        XCTAssertEqual(frame.plan.center.x,640,accuracy:1.0)
+        XCTAssertEqual(frame.plan.center.y,360,accuracy:1.0)
+        XCTAssertNotEqual(frame.recordingPlan.center,frame.plan.center)
+        XCTAssertLessThan(frame.recordingPlan.sourceDetail.width,frame.plan.sourceDetail.width)
+        XCTAssertEqual(frame.image.extent,frame.recordingImage.extent)
+    }
+
+    func testSmartArtifactGuardUsesSaferOutputCropWithLiveHorizonPreview() throws {
+        let renderer=try makeRenderer(), motion=MotionService(), processor=FrameProcessor(motion:motion,renderer:renderer)
+        var settings=CameraSettings(); settings.mode = .video; settings.horizonLock=true; settings.smartArtifactGuard=true; settings.videoFraming = .landscape; settings.resolution = .hd
+        processor.configure(settings,front:false,horizontalFOVDegrees:70)
+        let input=try buffer(pattern(width:1280,height:720),renderer:renderer)
+        motion.injectForTesting(MotionReading(time:2,gx:0.3,gy:-0.95,gz:0,rateZ:0,rateX:0,rateY:0))
+        let frame=try processor.process(buffer:input,hostTime:2)
+        XCTAssertEqual(frame.plan.angle,frame.recordingPlan.angle,accuracy:0.0001)
+        XCTAssertGreaterThan(frame.recordingPlan.scale,frame.plan.scale)
+        XCTAssertLessThan(frame.recordingPlan.sourceDetail.width,frame.plan.sourceDetail.width)
+    }
     func testSpatialPhotoEncoderCreatesTwoImageStereoHEIC() throws {
         guard #available(iOS 18.0,*) else { throw XCTSkip("Spatial ImageIO metadata requires iOS 18") }
         let renderer=try makeRenderer(), leftCI=pattern(width:320,height:180)

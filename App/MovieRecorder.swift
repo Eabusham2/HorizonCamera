@@ -24,15 +24,17 @@ final class MovieRecorder {
         writer = try AVAssetWriter(outputURL: url, fileType: .mov)
         writer.metadata = NativeMovieController.movieMetadata(settings)
         let size = settings.outputSize
-        let fps = settings.mode == .slowMotion || settings.mode == .timeLapse ? 30 : settings.fps
-        let bitrate = Int(size.width*size.height*Double(fps)*0.13)
+        let fps:Double = settings.mode == .slowMotion || settings.mode == .timeLapse ? 30 : settings.fps
+        let bitsPerPixelFrame = settings.codec == .efficient ? 0.20 : 0.28
+        let bitrate = min(settings.codec == .efficient ? 120_000_000 : 160_000_000,
+                          max(5_000_000,Int(size.width*size.height*Double(fps)*bitsPerPixelFrame)))
         var output: [String: Any] = [AVVideoCodecKey: settings.codec.avCodec,
             AVVideoWidthKey: Int(size.width), AVVideoHeightKey: Int(size.height),
             AVVideoColorPropertiesKey: [AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
                 AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
                 AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2],
             AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: bitrate,
-                AVVideoExpectedSourceFrameRateKey: fps, AVVideoMaxKeyFrameIntervalKey: fps*2]]
+                AVVideoExpectedSourceFrameRateKey: fps, AVVideoMaxKeyFrameIntervalKey: Int(ceil(fps*2))]]
         if !writer.canApply(outputSettings: output, forMediaType: .video) {
             output[AVVideoCodecKey] = AVVideoCodecType.h264
         }

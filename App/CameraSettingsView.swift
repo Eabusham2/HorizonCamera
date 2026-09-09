@@ -8,8 +8,7 @@ struct CameraSettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                stabilizationSection
-                formatSection
+                smartSection
                 if model.settings.mode.isPhotoMode { photoSection }
                 focusExposureSection
                 viewfinderSection
@@ -24,6 +23,44 @@ struct CameraSettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement:.confirmationAction) { Button("Done") { model.persist(); dismiss() } } }
         }.tint(.yellow)
+    }
+
+    private var smartSection: some View {
+        Section("Smart") {
+            Toggle("Smart Artifact Guard",isOn:model.binding(\.smartArtifactGuard))
+            Text("Adds a small output-only safety crop during sensor-driven stabilization to keep rotated/tilted edges from producing circular or repeated-edge artifacts. Horizon and Zoom Lock still preview live.")
+                .font(.caption).foregroundStyle(.secondary)
+            Toggle("Lens correction",isOn:model.binding(\.contentAwareDistortionCorrection))
+                .disabled(!model.capabilities.contentAwareDistortionCorrection)
+            Toggle("Virtual-device fusion",isOn:model.binding(\.virtualDeviceFusion))
+                .disabled(!model.capabilities.virtualDeviceFusion)
+            Toggle("Sensor orientation compensation",isOn:model.binding(\.sensorOrientationCompensation))
+                .disabled(!model.capabilities.sensorOrientationCompensation || model.settings.raw)
+            Toggle("Center Stage",isOn:model.binding(\.centerStage))
+                .disabled(!model.capabilities.centerStage || model.settings.depthData || model.settings.mode == .portrait)
+            Toggle("Smart Framing",isOn:model.binding(\.smartFraming))
+                .disabled(!model.capabilities.smartFraming || model.settings.mode == .portrait)
+            Toggle("Lens cleaning hints",isOn:model.binding(\.lensCleaningHints))
+                .disabled(!model.capabilities.lensSmudgeDetection)
+            if model.settings.mode.isMovie {
+                Picker("Native stabilization",selection:model.binding(\.stabilization)) {
+                    ForEach(StabilizationChoice.allCases) { choice in
+                        Text(choice.rawValue).tag(choice)
+                            .disabled(!model.capabilities.supportedStabilizationModes.contains(choice))
+                    }
+                }
+                .disabled(model.settings.horizonLock || model.settings.zoomLock || model.settings.actionStabilization)
+                Toggle("Lock Camera while recording",isOn:model.binding(\.lockCameraSwitching))
+                    .disabled(!model.capabilities.lockCameraSwitching)
+                Toggle("Auto FPS in low light",isOn:model.binding(\.autoFPS))
+                    .disabled(!model.capabilities.autoFPS || model.settings.fps > 60)
+                if model.settings.actionStabilization {
+                    Toggle("Native Action assist",isOn:model.binding(\.actionNativeAssist))
+                    Text("Action assist prefers a low-latency public stabilization mode when the active format supports it. The custom SDR correction remains output-only.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 
     private var stabilizationSection: some View {
@@ -105,9 +142,6 @@ struct CameraSettingsView: View {
 
     private var photoSection: some View {
         Section("Photos") {
-            Picker("Shutter timer", selection:model.binding(\.timer)) {
-                Text("Off").tag(0); Text("3 seconds").tag(3); Text("10 seconds").tag(10)
-            }
             Picker("Quality priority", selection:model.binding(\.photoQuality)) {
                 ForEach(PhotoQualityChoice.allCases) { Text($0.rawValue).tag($0) }
             }
@@ -135,19 +169,6 @@ struct CameraSettingsView: View {
                 LabeledContent("Stitch feather",value:String(format:"%.0f%%",model.settings.panoramaFeather*100)); Slider(value:model.binding(\.panoramaFeather),in:0.1...0.9,step:0.05)
                 Text("PANO is a motion-guided feather stitch from overlapping live camera frames; it approximates the stock panorama workflow rather than Apple's private stitcher.").font(.caption).foregroundStyle(.secondary)
             }
-            if !model.capabilities.supportedPhotoResolutionsMP.isEmpty {
-                Picker("Photo resolution", selection:model.binding(\.photoResolutionMP)) {
-                    Text("Maximum").tag(0)
-                    ForEach(model.capabilities.supportedPhotoResolutionsMP, id:\.self) { Text("\($0) MP").tag($0) }
-                }
-            }
-            Toggle("Live Photo", isOn:model.binding(\.livePhoto))
-                .disabled(!model.capabilities.livePhoto || model.settings.isProcessedPhoto || model.settings.mode == .portrait || model.settings.constantColor)
-            Toggle("RAW + processed photo", isOn:model.binding(\.raw))
-                .disabled(!model.capabilities.raw || model.settings.isProcessedPhoto || model.settings.mode == .portrait || model.settings.constantColor)
-            if model.settings.raw && model.capabilities.proRAW {
-                Toggle("Prefer Apple ProRAW", isOn:model.binding(\.preferProRAW))
-            }
             Picker("Filter", selection:model.binding(\.filter)) {
                 ForEach(CaptureFilter.allCases) { Text($0.rawValue).tag($0) }
             }.disabled(model.settings.mode == .portrait)
@@ -169,9 +190,6 @@ struct CameraSettingsView: View {
                 if model.settings.constantColor { Toggle("Constant Color fallback photo", isOn:model.binding(\.constantColorFallback)) }
             }
             if model.capabilities.autoRedEyeReduction { Toggle("Auto red-eye reduction", isOn:model.binding(\.autoRedEyeReduction)) }
-            if model.capabilities.contentAwareDistortionCorrection { Toggle("Content-aware distortion correction", isOn:model.binding(\.contentAwareDistortionCorrection)) }
-            if model.capabilities.virtualDeviceFusion { Toggle("Automatic virtual-device fusion", isOn:model.binding(\.virtualDeviceFusion)) }
-            if model.capabilities.sensorOrientationCompensation { Toggle("Sensor-orientation compensation", isOn:model.binding(\.sensorOrientationCompensation)).disabled(model.settings.raw) }
             if model.capabilities.cameraCalibrationData { Toggle("Camera calibration data", isOn:model.binding(\.cameraCalibrationData)).disabled(model.settings.raw) }
 
             if model.capabilities.responsiveCapture { Toggle("Responsive capture", isOn:model.binding(\.responsiveCapture)) }
@@ -188,7 +206,6 @@ struct CameraSettingsView: View {
 
     private var focusExposureSection: some View {
         Section("Focus and exposure") {
-            Toggle("AE/AF lock", isOn:model.binding(\.aeafLock))
             LabeledContent("Exposure compensation", value:String(format:"%+.1f EV",model.settings.exposureEV))
             Slider(value:model.binding(\.exposureEV), in:model.capabilities.minEV...max(model.capabilities.minEV+0.1,model.capabilities.maxEV), step:0.1)
                 .disabled(model.settings.manualExposure || model.settings.aeafLock)
@@ -203,14 +220,30 @@ struct CameraSettingsView: View {
                     Picker("Autofocus range", selection:model.binding(\.focusRange)) { ForEach(FocusRangeChoice.allCases) { Text($0.rawValue).tag($0) } }
                 }
             }
-            Toggle("Manual exposure", isOn:model.binding(\.manualExposure))
+            Toggle("Manual exposure",isOn:model.binding(\.manualExposure))
             if model.settings.manualExposure {
-                LabeledContent("ISO", value:String(format:"%.0f",model.settings.iso))
-                Slider(value:model.binding(\.iso), in:model.capabilities.minISO...max(model.capabilities.minISO+1,model.capabilities.maxISO), step:1)
-                LabeledContent("Shutter", value:String(format:"1/%.0f s",model.settings.shutterDenominator))
-                Slider(value:model.binding(\.shutterDenominator), in:30...4000, step:5)
+                LabeledContent("ISO",value:String(format:"%.0f",model.settings.iso))
+                Slider(value:model.binding(\.iso),in:model.capabilities.minISO...max(model.capabilities.minISO+1,model.capabilities.maxISO),step:1)
+                Toggle("Use shutter angle",isOn:model.binding(\.shutterAngleMode))
+                if model.settings.shutterAngleMode {
+                    LabeledContent("Shutter angle",value:String(format:"%.1f°",model.settings.shutterAngle))
+                    Slider(value:model.binding(\.shutterAngle),in:1.1...360,step:0.1)
+                } else {
+                    LabeledContent("Shutter",value:String(format:"1/%.0f s",model.settings.shutterDenominator))
+                    Slider(value:model.binding(\.shutterDenominator),in:24...8000,step:1)
+                }
             }
-            Toggle("Lock white balance", isOn:model.binding(\.whiteBalanceLock))
+            Toggle("Manual white balance",isOn:model.binding(\.manualWhiteBalance))
+            if model.settings.manualWhiteBalance {
+                LabeledContent("Temperature",value:"\(Int(model.settings.whiteBalanceKelvin)) K")
+                Slider(value:model.binding(\.whiteBalanceKelvin),in:2500...10000,step:50)
+                LabeledContent("Tint",value:String(format:"%+.0f",model.settings.whiteBalanceTint))
+                Slider(value:model.binding(\.whiteBalanceTint),in:-150...150,step:1)
+            } else {
+                Toggle("Lock white balance",isOn:model.binding(\.whiteBalanceLock))
+            }
+            Text("Tap the viewfinder to focus/expose. Touch and hold the viewfinder to toggle AE/AF Lock.")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -219,18 +252,9 @@ struct CameraSettingsView: View {
             Toggle("Grid", isOn:model.binding(\.grid))
             Toggle("Level indicator", isOn:model.binding(\.showLevel))
             Toggle("Mirror front camera", isOn:model.binding(\.mirrorSelfie))
-            if model.capabilities.centerStage {
-                Toggle("Center Stage", isOn:model.binding(\.centerStage)).disabled(model.settings.depthData || model.settings.mode == .portrait)
-            }
-            if model.capabilities.smartFraming {
-                Toggle("Smart Framing", isOn:model.binding(\.smartFraming)).disabled(model.settings.mode == .portrait)
-            }
-            if model.capabilities.lensSmudgeDetection {
-                Toggle("Lens cleaning hints", isOn:model.binding(\.lensCleaningHints))
-            }
             if model.capabilities.qrScanning { Toggle("Scan QR codes", isOn:model.binding(\.scanQRCodes)) }
-            if model.capabilities.liveText { Toggle("Show detected text", isOn:model.binding(\.showDetectedText)) }
-            Text("Tap to focus/expose, pinch to zoom around the touched point, and hold to toggle AE/AF lock. Settings are persisted by HorizonCamera between launches.")
+            if model.capabilities.liveText { Toggle("Live Text detection",isOn:model.binding(\.showDetectedText)) }
+            Text("Live Text detects quietly; the text panel only opens after you tap the Live Text button. Grid is off by default. Persistent settings are remembered; live zoom resets to 1× each launch.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -250,16 +274,17 @@ struct CameraSettingsView: View {
     }
 
     private var metadataSection: some View {
-        Section("Capture metadata") {
-            TextField("Title", text:model.binding(\.metadataTitle))
-            TextField("Author", text:model.binding(\.metadataAuthor))
-            TextField("Copyright", text:model.binding(\.metadataCopyright))
-            TextField("Description", text:model.binding(\.metadataDescription), axis:.vertical)
-            TextField("Keywords, comma separated", text:model.binding(\.metadataKeywords))
-            Toggle("Location metadata", isOn:model.binding(\.includeLocationMetadata))
-            Text("Location is off by default. When enabled, iOS requests When In Use permission and a recent location is embedded as standard GPS/ISO-6709 metadata; the diagnostic report never includes coordinates.")
-                .font(.caption).foregroundStyle(.secondary)
-            Text("Native movies receive QuickTime title/author/copyright/description/keywords, software and creation-date metadata. Native and processed photos receive standardized TIFF/IPTC metadata; EXIF camera properties remain AVFoundation-managed.")
+        Section("Metadata") {
+            Toggle("Custom metadata",isOn:model.binding(\.customMetadataEnabled))
+            if model.settings.customMetadataEnabled {
+                TextField("Title",text:model.binding(\.metadataTitle))
+                TextField("Author",text:model.binding(\.metadataAuthor))
+                TextField("Copyright",text:model.binding(\.metadataCopyright))
+                TextField("Description",text:model.binding(\.metadataDescription),axis:.vertical)
+                TextField("Keywords, comma separated",text:model.binding(\.metadataKeywords))
+            }
+            Toggle("Location metadata",isOn:model.binding(\.includeLocationMetadata))
+            Text("Custom metadata is off by default. With it off, HorizonCamera preserves camera/AVFoundation metadata instead of injecting title/author/software fields. Location is also off until explicitly enabled.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -297,7 +322,7 @@ struct CameraSettingsView: View {
             Text("HorizonCamera \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "")")
             Text("Native Swift · AVFoundation · Core Motion · Vision · Core Image / Metal")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("Implemented public-API paths include Photo, depth-based Portrait data, Video, Time-lapse, Slo-mo, Cinematic, Spatial Video, ProRAW/RAW, ProRes, HLG HDR, Apple Log/Log 2, native stabilization choices, Lock Camera, Center Stage/Smart Framing, QR/Live Text, lens-cleaning hints and advanced audio. Apple's exact Night fusion, Photographic Styles, Portrait Lighting, Panorama stitching, Dolby Vision Camera look, Action-mode algorithm, Spatial Photo capture, Camera Control hardware behavior and lock-screen Camera extension are not claimed or imitated.")
+            Text("Public/API-backed capture includes native Photo/RAW/ProRAW, real-time and Slo-mo high frame rates, Time-lapse, Cinematic, Spatial Video, ProRes 422/RAW choices when exposed, HLG/Dolby-compatible HDR, Log/Log 2, advanced focus/exposure/WB, Camera Control, Dual Capture and spatial-photo packaging. HorizonCamera also implements real public-API approximations for Action, Night/HDR fusion, Styles, Portrait Lighting and Pano. Apple-private ISP/EIS algorithms and lock-screen Camera replacement behavior are not claimed.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

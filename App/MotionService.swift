@@ -10,7 +10,12 @@ final class MotionService: @unchecked Sendable {
     private let lock = NSLock()
     private var history = MotionHistory()
     private var lastError: String?
+    private let authorizationProbe = CMMotionActivityManager()
     var available: Bool { manager.isDeviceMotionAvailable }
+    func requestAuthorizationIfNeeded() {
+        guard CMMotionActivityManager.isActivityAvailable(), CMMotionActivityManager.authorizationStatus() == .notDetermined else { return }
+        authorizationProbe.startActivityUpdates(to:.main) { [weak self] _ in self?.authorizationProbe.stopActivityUpdates() }
+    }
     func start() {
         guard available, !manager.isDeviceMotionActive else { return }
         lock.lock(); history.clear(); lastError = nil; lock.unlock()
@@ -34,6 +39,12 @@ final class MotionService: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return history.sample(at: hostSeconds)
     }
+#if DEBUG
+    func injectForTesting(_ reading: MotionReading) {
+        lock.lock(); history.append(reading); lock.unlock()
+    }
+#endif
+
     var errorDescription: String? {
         lock.lock(); defer { lock.unlock() }; return lastError
     }

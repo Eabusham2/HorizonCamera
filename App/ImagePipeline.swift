@@ -5,8 +5,10 @@ import CoreVideo
 
 struct PreviewFrame {
     let image: CIImage
+    let recordingImage: CIImage
     let overview: CIImage
     let plan: CropPlan
+    let recordingPlan: CropPlan
     let target: Point2?
     let trackingGood: Bool
     let diagnostics: FrameDiagnostics
@@ -197,6 +199,9 @@ final class FrameProcessor {
     private var zoomTimestamp: Double?
     private var actionOffset = Point2(0,0)
     private var actionTimestamp: Double?
+    private var frameLockOffset = Point2(0,0)
+    private var frameLockTimestamp: Double?
+    private var horizontalFOVDegrees = 70.0
     private var pendingTarget: Point2?
     private(set) var lastPlan: CropPlan?
     private var frozenAngle: Double?
@@ -208,18 +213,19 @@ final class FrameProcessor {
     init(motion: MotionService, renderer: ImageRenderer) { self.motion = motion; self.renderer = renderer }
     func resetGeometry() {
         horizon.reset(); tracker.reset(); manualCenter = Point2(0.5, 0.5)
-        zoomAnchor = nil; zoomTimestamp = nil; actionOffset = Point2(0,0); actionTimestamp = nil; pendingTarget = nil; lastPlan = nil; lastAngle = 0
+        zoomAnchor = nil; zoomTimestamp = nil; actionOffset = Point2(0,0); actionTimestamp = nil; frameLockOffset = Point2(0,0); frameLockTimestamp = nil; pendingTarget = nil; lastPlan = nil; lastAngle = 0
         renderedZoom = settings.zoom
         preview.publish(nil); fpsCount = 0; fpsStart = 0; planHistory.removeAll(); frozenAngle = nil
     }
     func beginRecording() { frozenAngle = lastPlan?.angle }
     func endRecording() { frozenAngle = nil }
-    func configure(_ next: CameraSettings, front: Bool) {
+    func configure(_ next: CameraSettings, front: Bool, horizontalFOVDegrees: Double? = nil) {
         let geometryReset = self.front != front || settings.framing != next.framing || settings.mirrorSelfie != next.mirrorSelfie
         if geometryReset { resetGeometry() }
-        if settings.zoomLock != next.zoomLock { tracker.reset(); pendingTarget = nil; zoomAnchor = nil }
+        if settings.zoomLock != next.zoomLock { tracker.reset(); pendingTarget = nil; zoomAnchor = nil; frameLockOffset = .zero; frameLockTimestamp = nil }
         if settings.actionStabilization != next.actionStabilization { actionOffset = Point2(0,0); actionTimestamp = nil }
         self.settings = next; self.front = front
+        if let horizontalFOVDegrees, horizontalFOVDegrees.isFinite, horizontalFOVDegrees > 1 { self.horizontalFOVDegrees = horizontalFOVDegrees }
         if geometryReset { renderedZoom = next.zoom; zoomTimestamp = nil }
     }
     /// UIKit tap normalized to TOP-left, converted exactly through the saved render transform.
@@ -254,74 +260,113 @@ final class FrameProcessor {
         } else {
             diagnostics.motionStatus = motion.available ? "Motion stale — holding angle" : "Motion unavailable"
         }
+
+        // Zoom Lock is a floating sensor crop, not a subject-only tracker. Integrate
+        // camera pitch/yaw so the selected framing stays fixed until the real sensor
+        // boundary is reached. CropGeometry clamps at the edge; we then saturate the
+        // integrator there so reversing direction immediately gives travel back.
+        if settings.zoomLock, let reading {
+            let dt = min(0.05, max(0, hostTime - (frameLockTimestamp ?? hostTime)))
+            let delta = FrameLockMath.delta(rateX: reading.rateX, rateY: reading.rateY, dt: dt,
+                                            horizontalFOVDegrees: horizontalFOVDegrees,
+                                            sourceAspect: size.width / max(1, size.height))
+            frameLockOffset = frameLockOffset + delta
+            frameLockTimestamp = hostTime
+        } else if !settings.zoomLock {
+            frameLockOffset = .zero; frameLockTimestamp = hostTime
+        }
+
+        // Action uses the same immediate timestamp-aligned gyro data but is kept out
+        // of the preview. It only affects the recording image below, like Apple's
+        // stock Camera preview/output split.
         if settings.actionStabilization, let reading {
             let dt = min(0.05,max(0,hostTime-(actionTimestamp ?? hostTime)))
-            let gain = 0.10 + 0.22 * settings.actionStrength
-            let decay = pow(0.12,dt)
+            let gain = 0.12 + 0.24 * settings.actionStrength
+            let decay = exp(-1.7 * dt)
             actionOffset = Point2(actionOffset.x*decay - reading.rateY*dt*gain,
                                   actionOffset.y*decay + reading.rateX*dt*gain)
-            actionOffset.x = CropGeometry.clamp(actionOffset.x,-0.16,0.16)
-            actionOffset.y = CropGeometry.clamp(actionOffset.y,-0.16,0.16)
+            actionOffset.x = CropGeometry.clamp(actionOffset.x,-0.18,0.18)
+            actionOffset.y = CropGeometry.clamp(actionOffset.y,-0.18,0.18)
             actionTimestamp = hostTime
         } else { actionOffset = Point2(0,0); actionTimestamp = hostTime }
-        let angle: Double
+
+        let previewAngle: Double
         if settings.horizonLock {
-            angle = lastAngle + settings.horizonTrimDegrees * .pi/180
-        } else {
-            // Without Horizon Lock, orientation is a fixed framing choice, never
-            // continuously counter-rotated. Portrait=0; landscape picks its side.
-            if settings.framing == .landscape {
-                angle = frozenAngle ?? ((reading?.gx ?? 1) >= 0 ? -.pi/2 : .pi/2)
-            } else { angle = 0 }
-            diagnostics.motionStatus = "Horizon off"
-        }
+            previewAngle = lastAngle + settings.horizonTrimDegrees * .pi/180
+        } else if settings.framing == .landscape {
+            previewAngle = frozenAngle ?? ((reading?.gx ?? 1) >= 0 ? -.pi/2 : .pi/2)
+        } else { previewAngle = 0; diagnostics.motionStatus = "Horizon off" }
+
         if let previous = zoomTimestamp {
             renderedZoom = ZoomTransition.step(current:renderedZoom,target:settings.zoom,deltaTime:max(0,hostTime-previous))
         } else { renderedZoom = settings.zoom }
         zoomTimestamp = hostTime
-        var plan = try CropGeometry.plan(source: size, output: settings.outputSize, angle: angle,
-            zoom: renderedZoom, fullTurn: settings.horizonLock, reserve: settings.reserve,
-            requestedCenter: Point2(manualCenter.x*size.width, manualCenter.y*size.height))
+
+        var previewPlan = try CropGeometry.plan(source:size, output:settings.outputSize, angle:previewAngle,
+            zoom:renderedZoom, fullTurn:settings.horizonLock, reserve:settings.previewReserve,
+            requestedCenter:Point2((manualCenter.x+frameLockOffset.x)*size.width,
+                                   (manualCenter.y+frameLockOffset.y)*size.height))
+
         if let pinch = zoomAnchor, !settings.zoomLock {
-            let c = plan.centerHolding(target: Point2(pinch.target.x*size.width, pinch.target.y*size.height), at: pinch.anchor)
-            manualCenter = Point2(c.x/size.width, c.y/size.height)
-            if abs(log2(renderedZoom/settings.zoom)) < 0.002 { zoomAnchor = nil }
+            let c = previewPlan.centerHolding(target:Point2(pinch.target.x*size.width,pinch.target.y*size.height),at:pinch.anchor)
+            manualCenter = Point2(c.x/size.width,c.y/size.height)
+            if abs(log2(renderedZoom/settings.zoom)) < 0.002 { zoomAnchor=nil }
+            previewPlan = try CropGeometry.plan(source:size,output:settings.outputSize,angle:previewAngle,
+                zoom:renderedZoom,fullTurn:settings.horizonLock,reserve:settings.previewReserve,
+                requestedCenter:Point2(manualCenter.x*size.width,manualCenter.y*size.height))
         }
-        if let target = pendingTarget {
+
+        if let target=pendingTarget {
             if settings.zoomLock {
-                let p = (lastPlan ?? plan).outputToSource(Point2(target.x*plan.output.width, target.y*plan.output.height))
-                let w = max(0.035, min(0.20, 0.14*plan.sourceDetail.width/size.width))
-                let h = max(0.035, min(0.20, 0.14*plan.sourceDetail.height/size.height))
-                tracker.seed(normalizedBox: CGRect(x: p.x/size.width-w/2, y: p.y/size.height-h/2, width: w, height: h), anchor: target)
+                let p=(lastPlan ?? previewPlan).outputToSource(Point2(target.x*previewPlan.output.width,target.y*previewPlan.output.height))
+                manualCenter=Point2(p.x/size.width,p.y/size.height)
+                frameLockOffset = .zero
+                frameLockTimestamp=hostTime
+                tracker.reset()
+                previewPlan=try CropGeometry.plan(source:size,output:settings.outputSize,angle:previewAngle,
+                    zoom:renderedZoom,fullTurn:settings.horizonLock,reserve:settings.previewReserve,
+                    requestedCenter:Point2(manualCenter.x*size.width,manualCenter.y*size.height))
             }
-            pendingTarget = nil
+            pendingTarget=nil
         }
-        if settings.zoomLock { tracker.update(image: source, time: hostTime) }
-        var desired = Point2((manualCenter.x + actionOffset.x)*size.width, (manualCenter.y + actionOffset.y)*size.height)
-        if settings.zoomLock, let target = tracker.target {
-            desired = plan.centerHolding(target: Point2(target.x*size.width, target.y*size.height), at: tracker.anchor)
+
+        if settings.zoomLock && previewPlan.wasClamped {
+            frameLockOffset = Point2(previewPlan.center.x/size.width-manualCenter.x,
+                                     previewPlan.center.y/size.height-manualCenter.y)
+        } else if !settings.zoomLock {
+            manualCenter = Point2(previewPlan.center.x/size.width,previewPlan.center.y/size.height)
         }
-        plan = try CropGeometry.plan(source: size, output: settings.outputSize, angle: angle,
-            zoom: renderedZoom, fullTurn: settings.horizonLock, reserve: settings.reserve, requestedCenter: desired)
-        manualCenter = Point2(plan.center.x/size.width, plan.center.y/size.height)
-        lastPlan = plan
-        planHistory.append((hostTime,plan))
+
+        // Recording/output plan can be more aggressive than preview. Horizon and
+        // Zoom Lock remain WYSIWYG; Action and Smart Artifact Guard add output-only
+        // motion/crop headroom so the viewfinder stays responsive and uncluttered.
+        var captureAngle = previewAngle
+        if settings.actionStabilization && !settings.horizonLock {
+            captureAngle = lastAngle * (0.45 + 0.45*settings.actionStrength)
+        }
+        let captureCenter = Point2(previewPlan.center.x + actionOffset.x*size.width,
+                                   previewPlan.center.y + actionOffset.y*size.height)
+        let capturePlan = try CropGeometry.plan(source:size, output:settings.outputSize, angle:captureAngle,
+            zoom:renderedZoom, fullTurn:settings.horizonLock, reserve:settings.captureReserve,
+            requestedCenter:captureCenter)
+
+        lastPlan = previewPlan
+        planHistory.append((hostTime,capturePlan))
         if planHistory.count > 600 { planHistory.removeFirst(planHistory.count-600) }
-        let output = renderer.applyLook(renderer.transform(source, plan: plan), settings:settings)
-        let target = settings.zoomLock ? tracker.box.map { box -> Point2 in
-            let p = plan.sourceToOutput(Point2(box.midX*size.width, box.midY*size.height))
-            return Point2(p.x/plan.output.width, p.y/plan.output.height)
-        } : nil
+
+        let previewImage = renderer.applyLook(renderer.transform(source,plan:previewPlan),settings:settings)
+        let recordingImage = renderer.applyLook(renderer.transform(source,plan:capturePlan),settings:settings)
+        let target = settings.zoomLock ? Point2(0.5,0.5) : nil
         fpsCount += 1
-        if fpsStart == 0 { fpsStart = hostTime }
-        if hostTime-fpsStart >= 1 { fps = Double(fpsCount)/(hostTime-fpsStart); fpsStart = hostTime; fpsCount = 0 }
-        diagnostics.rollDegrees = lastAngle * 180 / .pi
-        diagnostics.trackingStatus = settings.zoomLock ? (plan.wasClamped && tracker.state == .locked ? "Edge — move camera toward subject" : tracker.state.rawValue) : "Off"
-        diagnostics.confidence = tracker.confidence; diagnostics.edgeLimited = plan.wasClamped
-        diagnostics.detail = plan.sourceDetail; diagnostics.upscaled = plan.upscales
-        diagnostics.deliveredFPS = fps; diagnostics.droppedFrames = dropped
-        let frame = PreviewFrame(image: output, overview: source, plan: plan, target: target,
-            trackingGood: tracker.state == .locked && !plan.wasClamped, diagnostics: diagnostics)
+        if fpsStart == 0 { fpsStart=hostTime }
+        if hostTime-fpsStart >= 1 { fps=Double(fpsCount)/(hostTime-fpsStart); fpsStart=hostTime; fpsCount=0 }
+        diagnostics.rollDegrees=lastAngle*180/.pi
+        diagnostics.trackingStatus = settings.zoomLock ? (previewPlan.wasClamped ? "Edge" : "Locked") : "Off"
+        diagnostics.confidence=0; diagnostics.edgeLimited=previewPlan.wasClamped
+        diagnostics.detail=capturePlan.sourceDetail; diagnostics.upscaled=capturePlan.upscales
+        diagnostics.deliveredFPS=fps; diagnostics.droppedFrames=dropped
+        let frame=PreviewFrame(image:previewImage,recordingImage:recordingImage,overview:source,plan:previewPlan,recordingPlan:capturePlan,target:target,
+            trackingGood:settings.zoomLock && !previewPlan.wasClamped,diagnostics:diagnostics)
         preview.publish(frame)
         return frame
     }

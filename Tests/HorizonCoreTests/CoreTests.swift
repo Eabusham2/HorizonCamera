@@ -143,4 +143,26 @@ final class CoreTests: XCTestCase {
         let p = try CropGeometry.plan(source:Size2(1080,1920),output:Size2(1080,1920),angle:0.3,zoom:2.25,fullTurn:true,reserve:0.95)
         XCTAssertEqual(p.zoom,2.25,accuracy:1e-12)
     }
+    func testFrameLockMotionDirectionsMatchFloatingCropConvention() {
+        let rightPan = FrameLockMath.delta(rateX: 0, rateY: 2, dt: 0.02, horizontalFOVDegrees: 70, sourceAspect: 16.0/9.0)
+        let downTilt = FrameLockMath.delta(rateX: 2, rateY: 0, dt: 0.02, horizontalFOVDegrees: 70, sourceAspect: 16.0/9.0)
+        XCTAssertLessThan(rightPan.x, 0)
+        XCTAssertEqual(rightPan.y, 0, accuracy: 1e-12)
+        XCTAssertGreaterThan(downTilt.y, 0)
+        XCTAssertEqual(downTilt.x, 0, accuracy: 1e-12)
+    }
+
+    func testFloatingCropPinsAtEdgeAndMovesAgainWhenDirectionReverses() throws {
+        let source = Size2(1280,720), output = Size2(1280,720)
+        let edge = try CropGeometry.plan(source: source, output: output, angle: 0, zoom: 3, fullTurn: false, reserve: 0.8,
+                                         requestedCenter: Point2(-10_000,360))
+        XCTAssertTrue(edge.wasClamped)
+        let farther = try CropGeometry.plan(source: source, output: output, angle: 0, zoom: 3, fullTurn: false, reserve: 0.8,
+                                            requestedCenter: Point2(edge.center.x-500,360))
+        XCTAssertEqual(farther.center.x,edge.center.x,accuracy:1e-9)
+        let reversed = try CropGeometry.plan(source: source, output: output, angle: 0, zoom: 3, fullTurn: false, reserve: 0.8,
+                                             requestedCenter: Point2(edge.center.x+80,360))
+        XCTAssertGreaterThan(reversed.center.x,edge.center.x)
+    }
+
 }

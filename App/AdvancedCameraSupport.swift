@@ -18,9 +18,38 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
         guard let videoInput = engine.session.inputs.compactMap({ $0 as? AVCaptureDeviceInput }).first(where: { $0.ports.contains(where: { $0.mediaType == .video }) }) else { return result }
         let device = videoInput.device
         let format = device.activeFormat
-        result.supportedResolutions = [.hd, .fullHD] + (base.supports4K ? [.ultraHD] : [])
-        let fpsCandidates = [24, 25, 30, 50, 60, 120]
-        result.supportedFPS = fpsCandidates.filter { fps in device.formats.contains { f in f.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= Double(fps) && $0.maxFrameRate >= Double(fps) } } }
+        let codecProbe=AVCaptureMovieFileOutput()
+        let subtypes=Set(device.formats.map{$0.formatDescription.mediaSubType.rawValue})
+        result.proRes = subtypes.contains(kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange) || codecProbe.availableVideoCodecTypes.contains(.proRes422) || codecProbe.availableVideoCodecTypes.contains(.proRes422LT) || codecProbe.availableVideoCodecTypes.contains(.proRes422HQ)
+        if #available(iOS 26.0, *) {
+            result.proResRAW=subtypes.contains(kCMVideoCodecType_AppleProResRAW) || codecProbe.availableVideoCodecTypes.contains(.proResRAW)
+            result.proResRAWHQ=subtypes.contains(kCMVideoCodecType_AppleProResRAWHQ) || codecProbe.availableVideoCodecTypes.contains(.proResRAWHQ)
+        }
+        let fpsCandidates:[Double]=[23.976,24,25,29.97,30,48,50,59.94,60,100,120,240]
+        func meets(_ f:AVCaptureDevice.Format,_ resolution:Resolution)->Bool {
+            let d=CMVideoFormatDescriptionGetDimensions(f.formatDescription), long=Int(max(d.width,d.height)), short=Int(min(d.width,d.height))
+            switch resolution {
+            case .hd:return long>=1280 && short>=720
+            case .fullHD:return long>=1920 && short>=1080
+            case .action2_8K:return long>=2816 && short>=1584
+            case .ultraHD:return long>=3840 && short>=2160
+            case .raw17x9:return long>=4224 && short>=2240
+            case .openGate:return long>=4224 && short>=3024
+            }
+        }
+        var supported:[Resolution:[Double]]=[:]
+        for resolution in Resolution.allCases {
+            supported[resolution]=fpsCandidates.filter { rate in
+                device.formats.contains { f in meets(f,resolution) && f.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= rate+0.001 && $0.maxFrameRate >= rate-0.001 } }
+            }
+        }
+        result.supportedFPSByResolution=supported
+        result.supportedResolutions=[.hd,.fullHD] + ((supported[.action2_8K]?.isEmpty == false) ? [.action2_8K] : []) + ((supported[.ultraHD]?.isEmpty == false) ? [.ultraHD] : [])
+        if #available(iOS 26.0, *), result.proResRAW || result.proResRAWHQ {
+            if supported[.raw17x9]?.isEmpty == false { result.supportedResolutions.append(.raw17x9) }
+            if supported[.openGate]?.isEmpty == false { result.supportedResolutions.append(.openGate) }
+        }
+        result.supportedFPS=fpsCandidates.filter { rate in device.formats.contains { f in f.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= rate+0.001 && $0.maxFrameRate >= rate-0.001 } } }
         result.supportedSlowMotionFPS = [120, 240].filter { fps in device.formats.contains { f in f.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= Double(fps) } } }
         if #available(iOS 18.0, *) { result.autoFPS = format.isAutoVideoFrameRateSupported }
         result.lockCameraSwitching = device.primaryConstituentDeviceSwitchingBehavior != .unsupported
@@ -67,9 +96,7 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
             if #available(iOS 26.0, *) { result.sensorOrientationCompensation = photo.isCameraSensorOrientationCompensationSupported }
             result.cameraCalibrationData = photo.isCameraCalibrationDataDeliverySupported
         }
-        let probe = AVCaptureMovieFileOutput()
-        result.proRes = probe.availableVideoCodecTypes.contains(.proRes422) || probe.availableVideoCodecTypes.contains(.proRes422LT) || probe.availableVideoCodecTypes.contains(.proRes422HQ)
-        result.dolbyVision = result.hdrHLG && (probe.availableVideoCodecTypes.isEmpty || probe.availableVideoCodecTypes.contains(.hevc))
+        result.dolbyVision = result.hdrHLG && (codecProbe.availableVideoCodecTypes.isEmpty || codecProbe.availableVideoCodecTypes.contains(.hevc))
         if #available(iOS 26.0, *), let audioInput = engine.session.inputs.compactMap({ $0 as? AVCaptureDeviceInput }).first(where: { $0.ports.contains(where: { $0.mediaType == .audio }) }) {
             result.stereoAudio = audioInput.isMultichannelAudioModeSupported(.stereo)
             result.spatialAudio = audioInput.isMultichannelAudioModeSupported(.firstOrderAmbisonics)
@@ -82,6 +109,7 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
     /// For the Action tick, request the strongest stabilization mode this active
     /// format actually reports, then layer HorizonCamera's gyro/crop correction on top.
     static func preferredActionNativeStabilization(for format: AVCaptureDevice.Format) -> AVCaptureVideoStabilizationMode {
+        if #available(iOS 26.0, *), format.isVideoStabilizationModeSupported(.lowLatency) { return .lowLatency }
         if #available(iOS 18.0, *), format.isVideoStabilizationModeSupported(.cinematicExtendedEnhanced) { return .cinematicExtendedEnhanced }
         for mode: AVCaptureVideoStabilizationMode in [.cinematicExtended, .cinematic, .standard, .auto] {
             if format.isVideoStabilizationModeSupported(mode) { return mode }
@@ -123,17 +151,19 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                     }
                 }
                 if #available(iOS 18.0, *), device.activeFormat.isAutoVideoFrameRateSupported { device.isAutoVideoFrameRateEnabled = settings.autoFPS }
-                let desiredColor: AVCaptureColorSpace
-                switch settings.colorProfile {
-                case .sdr: desiredColor = .sRGB
-                case .hdrHLG, .dolbyVision84: desiredColor = .HLG_BT2020
-                case .appleLog: desiredColor = .appleLog
-                case .appleLog2:
-                    if #available(iOS 26.0, *) { desiredColor = .appleLog2 } else { desiredColor = .appleLog }
+                if !settings.codec.isProResRAW {
+                    let desiredColor:AVCaptureColorSpace
+                    switch settings.colorProfile {
+                    case .sdr:desiredColor = .sRGB
+                    case .hdrHLG,.dolbyVision84:desiredColor = .HLG_BT2020
+                    case .appleLog:desiredColor = .appleLog
+                    case .appleLog2:
+                        if #available(iOS 26.0, *) { desiredColor = .appleLog2 } else { desiredColor = .appleLog }
+                    }
+                    if device.activeFormat.supportedColorSpaces.contains(desiredColor) { device.activeColorSpace=desiredColor }
+                    device.automaticallyAdjustsVideoHDREnabled=false
+                    if device.activeFormat.isVideoHDRSupported { device.isVideoHDREnabled=settings.colorProfile.isHDR }
                 }
-                if device.activeFormat.supportedColorSpaces.contains(desiredColor) { device.activeColorSpace = desiredColor }
-                device.automaticallyAdjustsVideoHDREnabled = false
-                if device.activeFormat.isVideoHDRSupported { device.isVideoHDREnabled = settings.colorProfile.isHDR }
             } catch { }
             if device.activeFormat.isCenterStageSupported {
                 AVCaptureDevice.centerStageControlMode = .cooperative
@@ -241,7 +271,10 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                     if connection.isVideoRotationAngleSupported(rotation) { connection.videoRotationAngle = rotation }
                     movie.setRecordsVideoOrientationAndMirroringChangesAsMetadataTrack(true, for: connection)
                     if settings.mode != .spatial {
-                        if settings.colorProfile == .dolbyVision84, movie.availableVideoCodecTypes.contains(.hevc) {
+                        if settings.colorProfile == .dolbyVision84 {
+                            guard movie.availableVideoCodecTypes.contains(.hevc) else {
+                                throw CameraFailure.message("Dolby Vision / HLG HEVC is unavailable for this active camera format.")
+                            }
                             let supported=Set(movie.supportedOutputSettingsKeys(for:connection))
                             var output:[String:Any]=[AVVideoCodecKey:AVVideoCodecType.hevc]
                             if supported.contains(AVVideoProfileLevelKey) { output[AVVideoProfileLevelKey]=kVTProfileLevel_HEVC_Main10_AutoLevel }
@@ -254,8 +287,12 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                                 output[AVVideoCompressionPropertiesKey]=[kVTCompressionPropertyKey_HDRMetadataInsertionMode as String:kVTHDRMetadataInsertionMode_Auto]
                             }
                             movie.setOutputSettings(output,for:connection)
-                        } else if movie.availableVideoCodecTypes.contains(settings.codec.avCodec) {
-                            movie.setOutputSettings([AVVideoCodecKey: settings.codec.avCodec], for: connection)
+                        } else {
+                            let requested=settings.codec.avCodec
+                            guard movie.availableVideoCodecTypes.contains(requested) else {
+                                throw CameraFailure.message("\(settings.codec.rawValue) is unavailable for this active lens, frame size, and frame rate.")
+                            }
+                            movie.setOutputSettings([AVVideoCodecKey:requested],for:connection)
                         }
                     }
                 }
@@ -302,24 +339,22 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
             item.value = value as NSString
             items.append(item)
         }
-        append(.quickTimeMetadataTitle, settings.metadataTitle)
-        append(.quickTimeMetadataAuthor, settings.metadataAuthor)
-        append(.quickTimeMetadataCopyright, settings.metadataCopyright)
-        append(.quickTimeMetadataDescription, settings.metadataDescription)
-        append(.quickTimeMetadataKeywords, settings.metadataKeywords)
+        if settings.customMetadataEnabled {
+            append(.quickTimeMetadataTitle,settings.metadataTitle)
+            append(.quickTimeMetadataAuthor,settings.metadataAuthor)
+            append(.quickTimeMetadataCopyright,settings.metadataCopyright)
+            append(.quickTimeMetadataDescription,settings.metadataDescription)
+            append(.quickTimeMetadataKeywords,settings.metadataKeywords)
+        }
         if settings.includeLocationMetadata, let location = CaptureLocation.shared.current() {
             append(.quickTimeMetadataLocationISO6709, CaptureLocation.iso6709(location))
             let accuracy = AVMutableMetadataItem(); accuracy.identifier = .quickTimeMetadataLocationHorizontalAccuracyInMeters
             accuracy.value = String(format:"%.1f",max(0,location.horizontalAccuracy)) as NSString; items.append(accuracy)
         }
-        let software = AVMutableMetadataItem()
-        software.identifier = .quickTimeMetadataSoftware
-        software.value = "HorizonCamera" as NSString
-        items.append(software)
-        let date = AVMutableMetadataItem()
-        date.identifier = .quickTimeMetadataCreationDate
-        date.value = ISO8601DateFormatter().string(from: Date()) as NSString
-        items.append(date)
+        if settings.customMetadataEnabled {
+            let software=AVMutableMetadataItem(); software.identifier = .quickTimeMetadataSoftware; software.value="HorizonCamera" as NSString; items.append(software)
+            let date=AVMutableMetadataItem(); date.identifier = .quickTimeMetadataCreationDate; date.value=ISO8601DateFormatter().string(from:Date()) as NSString; items.append(date)
+        }
         return items
     }
 }

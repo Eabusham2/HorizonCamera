@@ -7,31 +7,31 @@ import UniformTypeIdentifiers
 enum CaptureMetadata {
     static func photo(_ settings: CameraSettings, base: [String: Any] = [:]) -> [String: Any] {
         var metadata = base
-        var tiff: [String: Any] = (metadata[kCGImagePropertyTIFFDictionary as String] as? [String: Any]) ?? [:]
-        tiff[kCGImagePropertyTIFFSoftware as String] = "HorizonCamera"
-        if !settings.metadataAuthor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { tiff[kCGImagePropertyTIFFArtist as String] = settings.metadataAuthor }
-        if !settings.metadataCopyright.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { tiff[kCGImagePropertyTIFFCopyright as String] = settings.metadataCopyright }
-        let description = settings.metadataDescription.isEmpty ? settings.metadataTitle : settings.metadataDescription
-        if !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { tiff[kCGImagePropertyTIFFImageDescription as String] = description }
-        var iptc: [String: Any] = [:]
-        if !settings.metadataTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { iptc[kCGImagePropertyIPTCObjectName as String] = settings.metadataTitle }
-        if !settings.metadataAuthor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { iptc[kCGImagePropertyIPTCByline as String] = settings.metadataAuthor }
-        if !settings.metadataCopyright.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { iptc[kCGImagePropertyIPTCCopyrightNotice as String] = settings.metadataCopyright }
-        if !settings.metadataDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { iptc[kCGImagePropertyIPTCCaptionAbstract as String] = settings.metadataDescription }
-        let keywords = settings.metadataKeywords.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-        if !keywords.isEmpty { iptc[kCGImagePropertyIPTCKeywords as String] = keywords }
-        metadata[kCGImagePropertyTIFFDictionary as String] = tiff
-        if !iptc.isEmpty {
-            var existing = (metadata[kCGImagePropertyIPTCDictionary as String] as? [String:Any]) ?? [:]
-            existing.merge(iptc) { _,new in new }
-            metadata[kCGImagePropertyIPTCDictionary as String] = existing
+        if settings.customMetadataEnabled {
+            var tiff: [String: Any] = (metadata[kCGImagePropertyTIFFDictionary as String] as? [String: Any]) ?? [:]
+            tiff[kCGImagePropertyTIFFSoftware as String] = "HorizonCamera"
+            if !settings.metadataAuthor.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty { tiff[kCGImagePropertyTIFFArtist as String]=settings.metadataAuthor }
+            if !settings.metadataCopyright.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty { tiff[kCGImagePropertyTIFFCopyright as String]=settings.metadataCopyright }
+            let description=settings.metadataDescription.isEmpty ? settings.metadataTitle : settings.metadataDescription
+            if !description.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty { tiff[kCGImagePropertyTIFFImageDescription as String]=description }
+            if !tiff.isEmpty { metadata[kCGImagePropertyTIFFDictionary as String]=tiff }
+            var iptc:[String:Any]=(metadata[kCGImagePropertyIPTCDictionary as String] as? [String:Any]) ?? [:]
+            if !settings.metadataTitle.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty { iptc[kCGImagePropertyIPTCObjectName as String]=settings.metadataTitle }
+            if !settings.metadataAuthor.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty { iptc[kCGImagePropertyIPTCByline as String]=settings.metadataAuthor }
+            if !settings.metadataCopyright.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty { iptc[kCGImagePropertyIPTCCopyrightNotice as String]=settings.metadataCopyright }
+            if !settings.metadataDescription.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty { iptc[kCGImagePropertyIPTCCaptionAbstract as String]=settings.metadataDescription }
+            let keywords=settings.metadataKeywords.split(separator:",").map{$0.trimmingCharacters(in:.whitespacesAndNewlines)}.filter{!$0.isEmpty}
+            if !keywords.isEmpty { iptc[kCGImagePropertyIPTCKeywords as String]=keywords }
+            if !iptc.isEmpty { metadata[kCGImagePropertyIPTCDictionary as String]=iptc }
         }
-        if settings.includeLocationMetadata, let location = CaptureLocation.shared.current() {
-            metadata[kCGImagePropertyGPSDictionary as String] = CaptureLocation.gpsDictionary(location)
+        if settings.includeLocationMetadata, let location=CaptureLocation.shared.current() {
+            metadata[kCGImagePropertyGPSDictionary as String]=CaptureLocation.gpsDictionary(location)
         }
-        metadata[kCGImagePropertyOrientation as String] = 1
-        metadata.removeValue(forKey:kCGImagePropertyPixelWidth as String)
-        metadata.removeValue(forKey:kCGImagePropertyPixelHeight as String)
+        if !base.isEmpty {
+            metadata[kCGImagePropertyOrientation as String]=1
+            metadata.removeValue(forKey:kCGImagePropertyPixelWidth as String)
+            metadata.removeValue(forKey:kCGImagePropertyPixelHeight as String)
+        }
         return metadata
     }
 
@@ -44,7 +44,9 @@ enum CaptureMetadata {
         var base: [String:Any] = [:]
         if let sourceData, let source = CGImageSourceCreateWithData(sourceData as CFData,nil),
            let properties = CGImageSourceCopyPropertiesAtIndex(source,0,nil) as? [String:Any] { base = properties }
-        CGImageDestinationAddImage(destination, cg, photo(settings,base:base) as CFDictionary)
+        var properties = photo(settings,base:base)
+        properties[kCGImageDestinationLossyCompressionQuality as String] = efficient ? 0.98 : 0.96
+        CGImageDestinationAddImage(destination,cg,properties as CFDictionary)
         if let depthData {
             var type: NSString?
             if let dictionary = depthData.dictionaryRepresentation(forAuxiliaryDataType:&type), let type {
