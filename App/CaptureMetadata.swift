@@ -44,9 +44,10 @@ enum CaptureMetadata {
         var base: [String:Any] = [:]
         if let sourceData, let source = CGImageSourceCreateWithData(sourceData as CFData,nil),
            let properties = CGImageSourceCopyPropertiesAtIndex(source,0,nil) as? [String:Any] { base = properties }
-        var properties = photo(settings,base:base)
-        properties[kCGImageDestinationLossyCompressionQuality as String] = efficient ? 0.98 : 0.96
-        CGImageDestinationAddImage(destination,cg,properties as CFDictionary)
+        let properties=photo(settings,base:base)
+        if !properties.isEmpty { CGImageDestinationSetProperties(destination,properties as CFDictionary) }
+        let encodeOptions:[String:Any]=[kCGImageDestinationLossyCompressionQuality as String:efficient ? 0.98 : 0.96]
+        CGImageDestinationAddImage(destination,cg,encodeOptions as CFDictionary)
         if let depthData {
             var type: NSString?
             if let dictionary = depthData.dictionaryRepresentation(forAuxiliaryDataType:&type), let type {

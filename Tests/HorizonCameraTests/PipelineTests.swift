@@ -393,13 +393,14 @@ final class PipelineTests: XCTestCase {
         var settings=CameraSettings(); settings.mode = .video; settings.horizonLock=false; settings.zoomLock=false; settings.actionStabilization=true; settings.actionStrength=0.8; settings.videoFraming = .landscape; settings.resolution = .hd; settings.smartArtifactGuard=true
         processor.configure(settings,front:false,horizontalFOVDegrees:70)
         let input=try buffer(pattern(width:1280,height:720),renderer:renderer)
-        motion.injectForTesting(MotionReading(time:1,gx:0,gy:-1,gz:0,rateZ:0,rateX:0,rateY:0))
+        motion.injectForTesting(MotionReading(time:1,gx:1,gy:0,gz:0,rateZ:0,rateX:0,rateY:0))
         _=try processor.process(buffer:input,hostTime:1)
-        motion.injectForTesting(MotionReading(time:1.02,gx:0,gy:-1,gz:0,rateZ:0.2,rateX:1.5,rateY:2.0))
+        motion.injectForTesting(MotionReading(time:1.02,gx:1,gy:0,gz:0,rateZ:0.2,rateX:1.5,rateY:2.0))
         let frame=try processor.process(buffer:input,hostTime:1.02)
         XCTAssertEqual(frame.plan.center.x,640,accuracy:1.0)
         XCTAssertEqual(frame.plan.center.y,360,accuracy:1.0)
         XCTAssertNotEqual(frame.recordingPlan.center,frame.plan.center)
+        XCTAssertEqual(frame.recordingPlan.angle,frame.plan.angle,accuracy:0.05)
         XCTAssertLessThan(frame.recordingPlan.sourceDetail.width,frame.plan.sourceDetail.width)
         XCTAssertEqual(frame.image.extent,frame.recordingImage.extent)
     }

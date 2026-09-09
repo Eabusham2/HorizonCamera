@@ -340,9 +340,10 @@ final class FrameProcessor {
         // Recording/output plan can be more aggressive than preview. Horizon and
         // Zoom Lock remain WYSIWYG; Action and Smart Artifact Guard add output-only
         // motion/crop headroom so the viewfinder stays responsive and uncluttered.
-        var captureAngle = previewAngle
+        var captureAngle=previewAngle
         if settings.actionStabilization && !settings.horizonLock {
-            captureAngle = lastAngle * (0.45 + 0.45*settings.actionStrength)
+            let correction=AngleMath.wrap(lastAngle-previewAngle)
+            captureAngle=previewAngle + correction*(0.45 + 0.45*settings.actionStrength)
         }
         let captureCenter = Point2(previewPlan.center.x + actionOffset.x*size.width,
                                    previewPlan.center.y + actionOffset.y*size.height)
