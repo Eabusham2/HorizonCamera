@@ -86,6 +86,32 @@ struct CameraView: View {
                         }
                     }.padding(10).allowsHitTesting(false)
                 }
+                if let code = model.detectedCode {
+                    VStack {
+                        Spacer()
+                        Button { handleDetectedCode(code) } label: {
+                            Label(code,systemImage:"qrcode")
+                                .font(.caption).lineLimit(2).multilineTextAlignment(.leading)
+                                .padding(.horizontal,10).padding(.vertical,8)
+                                .background(.ultraThinMaterial,in:RoundedRectangle(cornerRadius:10))
+                        }.buttonStyle(.plain).padding(.horizontal,12).padding(.bottom,54)
+                    }
+                }
+                if model.settings.showDetectedText && !model.detectedText.isEmpty {
+                    VStack {
+                        Spacer()
+                        HStack(alignment:.bottom) {
+                            Text(model.detectedText.prefix(3).joined(separator:"
+"))
+                                .font(.caption2).lineLimit(4).padding(8)
+                                .background(.black.opacity(0.62),in:RoundedRectangle(cornerRadius:8))
+                            Button { UIPasteboard.general.string = model.detectedText.joined(separator:"
+") } label: {
+                                Image(systemName:"doc.on.doc").padding(8).background(.black.opacity(0.62),in:Circle())
+                            }.accessibilityLabel("Copy detected text")
+                        }.padding(.horizontal,12).padding(.bottom,10)
+                    }
+                }
                 if model.state == .starting { ProgressView("Starting camera…").padding().background(.black.opacity(0.65),in:RoundedRectangle(cornerRadius:12)) }
                 if model.state == .stopped {
                     VStack(spacing:12) {
@@ -204,6 +230,11 @@ struct CameraView: View {
         case .spatial: return !model.capabilities.spatialVideo
         default: return false
         }
+    }
+    private func handleDetectedCode(_ value: String) {
+        if let url = URL(string:value), let scheme = url.scheme?.lowercased(), ["http","https"].contains(scheme) {
+            UIApplication.shared.open(url)
+        } else { UIPasteboard.general.string = value }
     }
     private func time(_ seconds:Double) -> String {
         let s = max(0,Int(seconds)); return String(format:"%02d:%02d:%02d",s/3600,(s%3600)/60,s%60)

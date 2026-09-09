@@ -22,6 +22,12 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
         result.supportedFPS = fpsCandidates.filter { fps in device.formats.contains { f in f.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= Double(fps) && $0.maxFrameRate >= Double(fps) } } }
         result.supportedSlowMotionFPS = [120, 240].filter { fps in device.formats.contains { f in f.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= Double(fps) } } }
         if #available(iOS 18.0, *) { result.autoFPS = format.isAutoVideoFrameRateSupported }
+        result.lockCameraSwitching = device.primaryConstituentDeviceSwitchingBehavior != .unsupported
+        result.centerStage = format.isCenterStageSupported
+        if #available(iOS 26.0, *) {
+            result.smartFraming = format.isSmartFramingSupported && device.smartFramingMonitor != nil
+            result.lensSmudgeDetection = format.isCameraLensSmudgeDetectionSupported
+        }
         result.smoothAutofocus = device.isSmoothAutoFocusSupported
         result.focusRangeRestriction = device.isAutoFocusRangeRestrictionSupported
         result.faceDrivenAutofocus = device.isFocusModeSupported(.continuousAutoFocus)
@@ -46,6 +52,9 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
             result.zeroShutterLag = photo.isZeroShutterLagSupported
             result.fastCapturePrioritization = photo.isFastCapturePrioritizationSupported
             result.autoDeferredPhotoDelivery = photo.isAutoDeferredPhotoDeliverySupported
+            result.supportedPhotoResolutionsMP = Array(Set(format.supportedMaxPhotoDimensions.map {
+                Int((Double($0.width) * Double($0.height) / 1_000_000).rounded())
+            })).filter { $0 > 0 }.sorted()
             result.proRAW = photo.isAppleProRAWSupported
             result.depthData = photo.isDepthDataDeliverySupported
             result.portraitEffectsMatte = photo.isPortraitEffectsMatteDeliverySupported
@@ -80,6 +89,17 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                     device.isFaceDrivenAutoFocusEnabled = settings.faceDrivenAutofocus
                 }
                 if device.isAutoFocusRangeRestrictionSupported { device.autoFocusRangeRestriction = settings.focusRange.avValue }
+                if device.primaryConstituentDeviceSwitchingBehavior != .unsupported {
+                    device.setPrimaryConstituentDeviceSwitchingBehavior(settings.lockCameraSwitching ? .locked : .auto,
+                        restrictedSwitchingBehaviorConditions: [])
+                }
+                if #available(iOS 26.0, *), device.activeFormat.isCameraLensSmudgeDetectionSupported {
+                    device.setCameraLensSmudgeDetectionEnabled(settings.lensCleaningHints,
+                        detectionInterval: CMTime(seconds:5,preferredTimescale:600))
+                    if let monitor = device.smartFramingMonitor {
+                        monitor.enabledFramings = settings.smartFraming ? monitor.supportedFramings : []
+                    }
+                }
                 if #available(iOS 18.0, *), device.activeFormat.isAutoVideoFrameRateSupported { device.isAutoVideoFrameRateEnabled = settings.autoFPS }
                 let desiredColor: AVCaptureColorSpace
                 switch settings.colorProfile {
@@ -93,6 +113,12 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                 device.automaticallyAdjustsVideoHDREnabled = false
                 if device.activeFormat.isVideoHDRSupported { device.isVideoHDREnabled = settings.colorProfile == .hdrHLG }
             } catch { }
+            if device.activeFormat.isCenterStageSupported {
+                AVCaptureDevice.centerStageControlMode = .cooperative
+                AVCaptureDevice.isCenterStageEnabled = settings.centerStage
+            } else if AVCaptureDevice.centerStageControlMode != .user {
+                AVCaptureDevice.isCenterStageEnabled = false
+            }
             if let photo = engine.session.outputs.compactMap({ $0 as? AVCapturePhotoOutput }).first {
                 engine.session.beginConfiguration()
                 if photo.isResponsiveCaptureSupported { photo.isResponsiveCaptureEnabled = settings.responsiveCapture }
@@ -117,6 +143,27 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                 if audioInput.isMultichannelAudioModeSupported(requested) { audioInput.multichannelAudioMode = requested }
                 if audioInput.isWindNoiseRemovalSupported { audioInput.isWindNoiseRemovalEnabled = settings.windNoiseRemoval }
             }
+        }
+    }
+
+
+    @available(iOS 26.0, *)
+    static func applySmartFramingIfNeeded(_ settings: CameraSettings, engine: CaptureEngine) {
+        guard settings.smartFraming else { return }
+        engine.sessionQueue.async {
+            guard let input = engine.session.inputs.compactMap({ $0 as? AVCaptureDeviceInput }).first(where: { $0.ports.contains(where: { $0.mediaType == .video }) }),
+                  let monitor = input.device.smartFramingMonitor,
+                  let recommendation = monitor.recommendedFraming else { return }
+            let device = input.device
+            do {
+                try device.lockForConfiguration(); defer { device.unlockForConfiguration() }
+                if device.activeFormat.supportedDynamicAspectRatios.contains(recommendation.aspectRatio),
+                   device.dynamicAspectRatio != recommendation.aspectRatio {
+                    device.setDynamicAspectRatio(recommendation.aspectRatio, completionHandler:nil)
+                }
+                let zoom = min(max(CGFloat(recommendation.zoomFactor), device.minAvailableVideoZoomFactor), device.maxAvailableVideoZoomFactor)
+                if abs(device.videoZoomFactor-zoom) > 0.02 { device.ramp(toVideoZoomFactor:zoom,withRate:4) }
+            } catch { }
         }
     }
 
@@ -146,14 +193,16 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                     if settings.mode == .cinematic {
                         guard videoInput.isCinematicVideoCaptureSupported, let metadata else { session.commitConfiguration(); throw CameraFailure.message("Cinematic Video is not supported by this lens/format.") }
                         videoInput.isCinematicVideoCaptureEnabled = true
-                        metadata.metadataObjectTypes = metadata.requiredMetadataObjectTypesForCinematicVideoCapture
+                        var types = metadata.requiredMetadataObjectTypesForCinematicVideoCapture
+                        if settings.scanQRCodes && metadata.availableMetadataObjectTypes.contains(.qr) { types.append(.qr) }
+                        metadata.metadataObjectTypes = Array(Set(types))
                         let f = videoInput.device.activeFormat
                         if f.minSimulatedAperture > 0 {
                             videoInput.simulatedAperture = min(max(settings.cinematicAperture, f.minSimulatedAperture), f.maxSimulatedAperture)
                         }
                     } else if videoInput.isCinematicVideoCaptureEnabled {
                         videoInput.isCinematicVideoCaptureEnabled = false
-                        metadata?.metadataObjectTypes = []
+                        if let metadata { metadata.metadataObjectTypes = settings.scanQRCodes && metadata.availableMetadataObjectTypes.contains(.qr) ? [.qr] : [] }
                     }
                 }
                 if #available(iOS 18.0, *) {

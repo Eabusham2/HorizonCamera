@@ -108,18 +108,25 @@ struct CameraSettings: Codable, Equatable {
     var fps = 30
     var slowMotionFPS = 120
     var autoFPS = false
+    var lockCameraSwitching = false
+    var centerStage = false
+    var smartFraming = false
+    var lensCleaningHints = true
     var horizonLock = true
     var zoomLock = false
     var zoom = 1.0
     var grid = true
     var showLevel = true
     var showOverview = true
+    var scanQRCodes = true
+    var showDetectedText = true
     var mirrorSelfie = true
     var flash: FlashChoice = .off
     var torch = false
     var livePhoto = false
     var raw = false
     var preferProRAW = true
+    var photoResolutionMP = 0
     var depthData = false
     var depthDataFiltered = true
     var portraitEffectsMatte = false
@@ -182,6 +189,8 @@ struct CameraSettings: Codable, Equatable {
             audioMode = .mono
         }
         if mode == .portrait {
+            centerStage = false
+            smartFraming = false
             depthData = true
             portraitEffectsMatte = true
             horizonLock = false
@@ -197,6 +206,7 @@ struct CameraSettings: Codable, Equatable {
             if flash == .off { flash = .auto }
         }
         if raw {
+            centerStage = false
             depthData = false
             portraitEffectsMatte = false
             semanticMattes = false
@@ -286,7 +296,14 @@ struct CameraCapabilities {
     var supportedResolutions: [Resolution] = [.hd, .fullHD]
     var supportedFPS: [Int] = [30]
     var supportedSlowMotionFPS: [Int] = []
+    var supportedPhotoResolutionsMP: [Int] = []
     var autoFPS = false
+    var lockCameraSwitching = false
+    var centerStage = false
+    var smartFraming = false
+    var lensSmudgeDetection = false
+    var qrScanning = false
+    var liveText = true
     var responsiveCapture = false
     var zeroShutterLag = false
     var fastCapturePrioritization = false
@@ -321,6 +338,8 @@ struct FrameDiagnostics {
     var deliveredFPS = 0.0
     var droppedFrames = 0
     var recordingSeconds = 0.0
+    var lensStatus = "Off"
+    var smartFramingStatus = "Off"
 }
 
 enum CameraFailure: LocalizedError {

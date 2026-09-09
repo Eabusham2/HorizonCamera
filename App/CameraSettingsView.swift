@@ -67,6 +67,9 @@ struct CameraSettingsView: View {
                     }
                     if model.capabilities.autoFPS { Toggle("Auto FPS in low light", isOn:model.binding(\.autoFPS)) }
                 }
+                if model.capabilities.lockCameraSwitching {
+                    Toggle("Lock Camera while recording", isOn:model.binding(\.lockCameraSwitching))
+                }
                 Picker("Encoding", selection:model.binding(\.codec)) {
                     ForEach(availableCodecs) { Text($0.rawValue).tag($0) }
                 }
@@ -95,6 +98,12 @@ struct CameraSettingsView: View {
             }
             Picker("Quality priority", selection:model.binding(\.photoQuality)) {
                 ForEach(PhotoQualityChoice.allCases) { Text($0.rawValue).tag($0) }
+            }
+            if !model.capabilities.supportedPhotoResolutionsMP.isEmpty {
+                Picker("Photo resolution", selection:model.binding(\.photoResolutionMP)) {
+                    Text("Maximum").tag(0)
+                    ForEach(model.capabilities.supportedPhotoResolutionsMP, id:\.self) { Text("\($0) MP").tag($0) }
+                }
             }
             Toggle("Live Photo", isOn:model.binding(\.livePhoto))
                 .disabled(!model.capabilities.livePhoto || model.settings.isProcessedPhoto || model.settings.mode == .portrait || model.settings.constantColor)
@@ -174,6 +183,17 @@ struct CameraSettingsView: View {
             Toggle("Grid", isOn:model.binding(\.grid))
             Toggle("Level indicator", isOn:model.binding(\.showLevel))
             Toggle("Mirror front camera", isOn:model.binding(\.mirrorSelfie))
+            if model.capabilities.centerStage {
+                Toggle("Center Stage", isOn:model.binding(\.centerStage)).disabled(model.settings.depthData || model.settings.mode == .portrait)
+            }
+            if model.capabilities.smartFraming {
+                Toggle("Smart Framing", isOn:model.binding(\.smartFraming)).disabled(model.settings.mode == .portrait)
+            }
+            if model.capabilities.lensSmudgeDetection {
+                Toggle("Lens cleaning hints", isOn:model.binding(\.lensCleaningHints))
+            }
+            if model.capabilities.qrScanning { Toggle("Scan QR codes", isOn:model.binding(\.scanQRCodes)) }
+            if model.capabilities.liveText { Toggle("Show detected text", isOn:model.binding(\.showDetectedText)) }
             Text("Tap to focus/expose, pinch to zoom around the touched point, and hold to toggle AE/AF lock. Settings are persisted by HorizonCamera between launches.")
                 .font(.caption).foregroundStyle(.secondary)
         }
@@ -229,6 +249,8 @@ struct CameraSettingsView: View {
             LabeledContent("Motion", value:model.diagnostics.motionStatus)
             LabeledContent("Tracking", value:model.diagnostics.trackingStatus)
             LabeledContent("Vision confidence", value:String(format:"%.0f%%",model.diagnostics.confidence*100))
+            if model.capabilities.lensSmudgeDetection { LabeledContent("Lens", value:model.diagnostics.lensStatus) }
+            if model.capabilities.smartFraming { LabeledContent("Smart framing", value:model.diagnostics.smartFramingStatus) }
             Button("Prepare diagnostic report") { diagnosticFile = model.diagnosticURL() }
             if let diagnosticFile { ShareLink("Share diagnostic JSON", item:diagnosticFile) }
         }
@@ -239,7 +261,7 @@ struct CameraSettingsView: View {
             Text("HorizonCamera \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "")")
             Text("Native Swift · AVFoundation · Core Motion · Vision · Core Image / Metal")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("Implemented public-API paths include Photo, depth-based Portrait data, Video, Time-lapse, Slo-mo, Cinematic, Spatial Video, ProRAW/RAW, ProRes, HLG HDR, Apple Log/Log 2, native stabilization choices and advanced audio. Apple's exact Night fusion, Photographic Styles, Portrait Lighting, Panorama stitching, Dolby Vision Camera look, Action-mode algorithm, Spatial Photo capture, Camera Control hardware behavior and lock-screen Camera extension are not claimed or imitated.")
+            Text("Implemented public-API paths include Photo, depth-based Portrait data, Video, Time-lapse, Slo-mo, Cinematic, Spatial Video, ProRAW/RAW, ProRes, HLG HDR, Apple Log/Log 2, native stabilization choices, Lock Camera, Center Stage/Smart Framing, QR/Live Text, lens-cleaning hints and advanced audio. Apple's exact Night fusion, Photographic Styles, Portrait Lighting, Panorama stitching, Dolby Vision Camera look, Action-mode algorithm, Spatial Photo capture, Camera Control hardware behavior and lock-screen Camera extension are not claimed or imitated.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

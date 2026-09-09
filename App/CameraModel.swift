@@ -14,6 +14,8 @@ import Combine
     @Published var showLibrary = false
     @Published var countdown: Int?
     @Published var focusPoint: Point2?
+    @Published var detectedCode: String?
+    @Published var detectedText: [String] = []
     let library = MediaLibrary()
     let renderer: ImageRenderer?
     let engine: CaptureEngine?
@@ -22,6 +24,7 @@ import Combine
     private var timerTask: Task<Void, Never>?
     private var settingsTask: Task<Void, Never>?
     private var focusTask: Task<Void, Never>?
+    private var codeTask: Task<Void, Never>?
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     var canConfigure: Bool { state == .ready && countdown == nil }
     var isRecording: Bool { state == .recording }
@@ -34,7 +37,7 @@ import Combine
     init() {
         renderer = ImageRenderer()
         engine = renderer.map { CaptureEngine(renderer:$0) }
-        if let data = try? Data(contentsOf:settingsURL), let saved = try? JSONDecoder().decode(CameraSettings.self,from:data) {
+        if let data = try? Data(contentsOf:settingsURL), let saved = Self.decodeSettingsMigrating(data) {
             settings = saved; settings.torch = false; settings.aeafLock = false
         }
         engine?.onState = { [weak self] state in
@@ -47,13 +50,40 @@ import Combine
             self.settings = actual
             if let engine = self.engine {
                 self.capabilities = NativeMovieController.augment(capabilities, engine: engine)
-                NativeMovieController.applyLiveSettings(actual, engine: engine)
+                var normalized = actual
+                if normalized.centerStage && !self.capabilities.centerStage { normalized.centerStage = false }
+                if normalized.smartFraming && !self.capabilities.smartFraming { normalized.smartFraming = false }
+                if normalized.lensCleaningHints && !self.capabilities.lensSmudgeDetection { normalized.lensCleaningHints = false }
+                if normalized.photoResolutionMP > 0 && !self.capabilities.supportedPhotoResolutionsMP.contains(normalized.photoResolutionMP) { normalized.photoResolutionMP = 0 }
+                self.settings = normalized
+                NativeMovieController.applyLiveSettings(normalized, engine: engine)
             } else { self.capabilities = capabilities }
         }
         engine?.onDiagnostics = { [weak self] info in self?.diagnostics = info }
+        engine?.onCode = { [weak self] value in
+            guard let self else { return }
+            self.detectedCode = value
+            self.codeTask?.cancel()
+            self.codeTask = Task { [weak self] in
+                try? await Task.sleep(for:.seconds(4))
+                if !Task.isCancelled { self?.detectedCode = nil }
+            }
+        }
+        engine?.onText = { [weak self] lines in self?.detectedText = lines }
         engine?.onError = { [weak self] text in if self?.error != text { self?.error = text } }
         engine?.onMedia = { [weak self] result in self?.handleMedia(result) }
         if engine == nil { error = "This device does not provide the Metal renderer required by HorizonCamera." }
+    }
+
+    nonisolated static func decodeSettingsMigrating(_ data: Data) -> CameraSettings? {
+        do {
+            let defaultData = try JSONEncoder().encode(CameraSettings())
+            guard var defaults = try JSONSerialization.jsonObject(with:defaultData) as? [String:Any],
+                  let saved = try JSONSerialization.jsonObject(with:data) as? [String:Any] else { return nil }
+            defaults.merge(saved) { _,new in new }
+            let merged = try JSONSerialization.data(withJSONObject:defaults)
+            return try JSONDecoder().decode(CameraSettings.self,from:merged)
+        } catch { return nil }
     }
 
     private func handleMedia(_ result: Result<MediaDraft, Error>) {
@@ -87,14 +117,14 @@ import Combine
     }
 
     func suspend() {
-        timerTask?.cancel(); countdown = nil; settingsTask?.cancel()
+        timerTask?.cancel(); countdown = nil; settingsTask?.cancel(); codeTask?.cancel(); detectedCode = nil; detectedText = []
         if nativeMovie.isRecording { nativeMovie.stop() }
         if isRecording || state == .finishing || state == .takingPhoto {
             if backgroundTask == .invalid {
                 backgroundTask = UIApplication.shared.beginBackgroundTask(withName:"Finish camera capture") { [weak self] in DispatchQueue.main.async { self?.endBackgroundTask() } }
             }
         }
-        engine?.suspend(); UIApplication.shared.isIdleTimerDisabled = false
+        engine?.suspend(); CaptureLocation.shared.stop(); UIApplication.shared.isIdleTimerDisabled = false
     }
 
     private func endBackgroundTask() {
@@ -107,6 +137,7 @@ import Combine
         var next = old; edit(&next)
         next.normalize(changedFrom: old)
         if next.includeLocationMetadata && !old.includeLocationMetadata { CaptureLocation.shared.request() }
+        if !next.includeLocationMetadata && old.includeLocationMetadata { CaptureLocation.shared.stop() }
         settings = next
         settingsTask?.cancel()
         settingsTask = Task { [weak self] in

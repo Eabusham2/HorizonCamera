@@ -50,6 +50,7 @@ HorizonCamera does **not** claim to clone Apple's proprietary image-processing a
 | JPEG / HEIF | ✅ Compatible / efficient output choices |
 | Bayer RAW | ✅ When exposed by the camera |
 | Apple ProRAW | ✅ Preferred independently from Bayer RAW when `isAppleProRAWSupported` reports support |
+| Photo resolution | ✅ Per-shot choices are generated from the active format's real `supportedMaxPhotoDimensions` (for example 12/24/48 MP where the device exposes them), plus Maximum |
 | Photo quality priority | ✅ Speed / Balanced / Quality |
 | Responsive capture | ✅ Capability-gated |
 | Zero shutter lag | ✅ Capability-gated |
@@ -78,6 +79,7 @@ AVFoundation requires long pipeline reconfiguration for depth and semantic matte
 | Resolution | ✅ 720p / 1080p / 4K when supported by the selected camera format |
 | Frame rates | ✅ 24 / 25 / 30 / 50 / 60 / 120 fps choices when exposed; Slo-mo checks 120/240 across device formats |
 | Auto FPS | ✅ iOS 18+ low-light automatic frame-rate control when supported |
+| Lock Camera | ✅ Locks constituent-camera switching on supported virtual cameras |
 | H.264 | ✅ |
 | HEVC | ✅ |
 | Apple ProRes 422 LT | ✅ Native movie path when available |
@@ -105,7 +107,7 @@ AVFoundation requires long pipeline reconfiguration for depth and semantic matte
 - Manual ISO and shutter duration with camera/format bounds.
 - White-balance lock.
 - Low-light boost where the device supports it.
-- An **Auto** virtual dual/dual-wide/triple camera option when iOS exposes one, plus physical front / ultrawide / wide / telephoto choices. Virtual cameras can use Apple's public seamless constituent switching/fusion behavior.
+- An **Auto** virtual dual/dual-wide/triple camera option when iOS exposes one, plus physical front / ultrawide / wide / telephoto choices. Virtual cameras can use Apple's public seamless constituent switching/fusion behavior, with a **Lock Camera** control to freeze constituent switching.
 
 ### Audio
 
@@ -129,6 +131,11 @@ Location metadata is **off by default**. If you enable it, HorizonCamera request
 ## Viewfinder and camera controls
 
 - Grid and level indicator.
+- QR-code detection with tap-to-open for HTTP(S), otherwise tap-to-copy.
+- Live Text detection using Vision with a copy action; it does not pretend to reproduce every system Live Text quick action/translation surface.
+- Center Stage toggle on formats that support it.
+- iOS 26 Smart Framing monitor: applies the device's recommended dynamic aspect ratio and zoom when supported.
+- iOS 26 lens-cleaning hints/status using AVFoundation's camera-lens-smudge detector.
 - Pinch-to-point zoom: without Zoom Lock, the point under your fingers remains anchored while the crop zooms.
 - Smooth Zoom Lock transitions.
 - Subject tracking reticle plus `Locked` / `Lost` / `Edge` states.
@@ -155,6 +162,8 @@ These stock-Camera behaviors either use proprietary/system processing, require a
 - **Camera Control** hardware gestures/system overlay behavior.
 - Apple's lock-screen Camera replacement / system Camera entitlement behavior.
 - Stock Spatial **Photo** authoring; Spatial Video is implemented through public AVFoundation APIs.
+- iPhone 17 **Dual Capture** is not yet in this single-session capture architecture; public `AVCaptureMultiCamSession` requires a separate simultaneous front/back session and writer rather than a safe toggle.
+- Full system **Live Text** actions (translation, phone/address/currency actions) remain system UI; HorizonCamera performs on-device text recognition/copy plus QR actions.
 
 This distinction is deliberate: “supported” in the UI means a real capture API/code path exists and the current device reports capability.
 

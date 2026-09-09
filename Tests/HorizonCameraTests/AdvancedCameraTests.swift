@@ -93,4 +93,17 @@ final class AdvancedCameraTests: XCTestCase {
         XCTAssertTrue(metadata.contains { $0.identifier == .quickTimeMetadataSoftware })
     }
 
+    func testOldSettingsJSONMigratesWithoutLosingExistingValues() throws {
+        let old = """{"mode":"VIDEO","zoom":2.5,"grid":false,"horizonLock":false}""".data(using:.utf8)!
+        let migrated = try XCTUnwrap(CameraModel.decodeSettingsMigrating(old))
+        XCTAssertEqual(migrated.mode,.video); XCTAssertEqual(migrated.zoom,2.5); XCTAssertFalse(migrated.grid); XCTAssertFalse(migrated.horizonLock)
+        XCTAssertTrue(migrated.scanQRCodes); XCTAssertTrue(migrated.showDetectedText); XCTAssertTrue(migrated.lensCleaningHints)
+    }
+    func testNewDetectionAndSwitchingSettingsRoundTrip() throws {
+        var settings = CameraSettings(); settings.lockCameraSwitching = true; settings.centerStage = true; settings.smartFraming = true
+        settings.photoResolutionMP = 24; settings.scanQRCodes = false; settings.showDetectedText = false; settings.lensCleaningHints = false
+        let decoded = try JSONDecoder().decode(CameraSettings.self,from:JSONEncoder().encode(settings))
+        XCTAssertEqual(decoded,settings)
+    }
+
 }

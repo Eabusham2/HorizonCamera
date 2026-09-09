@@ -36,6 +36,8 @@ final class CaptureLocation: NSObject, CLLocationManagerDelegate, @unchecked Sen
         if value.horizontalAccuracy <= 50 { manager.stopUpdatingLocation() }
     }
 
+    func stop() { DispatchQueue.main.async { [weak self] in self?.manager.stopUpdatingLocation() } }
+
     func current(maxAge: TimeInterval = 300) -> CLLocation? {
         lock.lock(); defer { lock.unlock() }
         guard let value = lastLocation, abs(value.timestamp.timeIntervalSinceNow) <= maxAge else { return nil }

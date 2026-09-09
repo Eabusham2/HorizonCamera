@@ -6,7 +6,7 @@ import UIKit
 public enum CaptureState: String { case stopped, starting, ready, recording, finishing, takingPhoto }
 
 final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate,
-    AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
+    AVCaptureAudioDataOutputSampleBufferDelegate, AVCaptureMetadataOutputObjectsDelegate, @unchecked Sendable {
     let session = AVCaptureSession()
     let sessionQueue = DispatchQueue(label: "camera.session", qos: .userInitiated)
     let frameQueue = DispatchQueue(label: "camera.frames", qos: .userInteractive)
@@ -16,6 +16,9 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
     private let photoOutput = AVCapturePhotoOutput()
+    private let metadataOutput = AVCaptureMetadataOutput()
+    private let textDetector = LiveTextDetector()
+    private let textQueue = DispatchQueue(label:"camera.live-text",qos:.utility)
     private var videoInput: AVCaptureDeviceInput?
     private var audioInput: AVCaptureDeviceInput?
     private var devices: [AVCaptureDevice] = []
@@ -30,10 +33,14 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var movie: MovieRecorder? // frameQueue only
     private var lastDiagnosticsTime = 0.0
     private var lastSpaceCheck = 0.0
+    private var lastTextTime = 0.0
+    private var lastSmartFramingTime = 0.0
     var onState: ((CaptureState) -> Void)?
     var onCapabilities: ((CameraCapabilities, CameraSettings) -> Void)?
     var onDiagnostics: ((FrameDiagnostics) -> Void)?
     var onMedia: ((Result<MediaDraft, Error>) -> Void)?
+    var onCode: ((String) -> Void)?
+    var onText: (([String]) -> Void)?
     var onError: ((String) -> Void)?
 
     init(renderer: ImageRenderer) {
@@ -200,6 +207,10 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 }
                 session.addOutput(videoOutput); session.addOutput(photoOutput)
                 photoOutput.maxPhotoQualityPrioritization = .quality
+                if session.canAddOutput(metadataOutput) {
+                    session.addOutput(metadataOutput)
+                    metadataOutput.setMetadataObjectsDelegate(self, queue: frameQueue)
+                }
                 configured = true
             }
             if microphoneAllowed && audioInput == nil, let microphone = AVCaptureDevice.default(for: .audio) {
@@ -247,6 +258,9 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             photoOutput.isLivePhotoCaptureEnabled = photoOutput.isLivePhotoCaptureSupported &&
                 settings.mode.isPhotoMode && settings.livePhoto && !settings.raw && !settings.isProcessedPhoto
             if photoOutput.isAppleProRAWSupported { photoOutput.isAppleProRAWEnabled = settings.raw && settings.preferProRAW && !settings.livePhoto && !settings.isProcessedPhoto }
+            if session.outputs.contains(where: { $0 === metadataOutput }) {
+                metadataOutput.metadataObjectTypes = settings.scanQRCodes && metadataOutput.availableMetadataObjectTypes.contains(.qr) ? [.qr] : []
+            }
             session.commitConfiguration()
         } catch { session.commitConfiguration(); throw error }
         try applyControls(settings, device: device)
@@ -274,6 +288,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         capabilities.flash = device.hasFlash; capabilities.torch = device.hasTorch
         capabilities.livePhoto = photoOutput.isLivePhotoCaptureSupported
         capabilities.raw = !photoOutput.availableRawPhotoPixelFormatTypes.isEmpty
+        capabilities.qrScanning = metadataOutput.availableMetadataObjectTypes.contains(.qr)
         capabilities.manualFocus = device.isLockingFocusWithCustomLensPositionSupported
         capabilities.maxISO = format.maxISO; capabilities.minISO = format.minISO
         capabilities.minEV = device.minExposureTargetBias; capabilities.maxEV = device.maxExposureTargetBias
@@ -416,7 +431,14 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                     else { settings = AVCapturePhotoSettings(format:[AVVideoCodecKey:codec]) }
                 } else { settings = AVCapturePhotoSettings(format:[AVVideoCodecKey:codec]) }
                 settings.photoQualityPrioritization = config.photoQuality.avValue
-                settings.maxPhotoDimensions = photoOutput.maxPhotoDimensions
+                let validDimensions = device.activeFormat.supportedMaxPhotoDimensions.filter {
+                    Int64($0.width) * Int64($0.height) <= Int64(photoOutput.maxPhotoDimensions.width) * Int64(photoOutput.maxPhotoDimensions.height)
+                }
+                if config.photoResolutionMP > 0, let selected = validDimensions.min(by: {
+                    abs(Double($0.width)*Double($0.height)/1_000_000-Double(config.photoResolutionMP)) <
+                    abs(Double($1.width)*Double($1.height)/1_000_000-Double(config.photoResolutionMP))
+                }) { settings.maxPhotoDimensions = selected }
+                else { settings.maxPhotoDimensions = validDimensions.max(by: { Int64($0.width)*Int64($0.height) < Int64($1.width)*Int64($1.height) }) ?? photoOutput.maxPhotoDimensions }
                 settings.metadata = CaptureMetadata.photo(config)
                 settings.isAutoRedEyeReductionEnabled = config.autoRedEyeReduction && photoOutput.isAutoRedEyeReductionSupported
                 settings.isAutoContentAwareDistortionCorrectionEnabled = config.contentAwareDistortionCorrection && photoOutput.isContentAwareDistortionCorrectionEnabled
@@ -496,6 +518,17 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
         return pts.seconds
     }
+    func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput metadataObjects: [AVMetadataObject], from connection: AVCaptureConnection) {
+        guard configuration.scanQRCodes else { return }
+        for object in metadataObjects {
+            if let code = object as? AVMetadataMachineReadableCodeObject, code.type == .qr,
+               let value = code.stringValue, !value.isEmpty {
+                DispatchQueue.main.async { [weak self] in self?.onCode?(value) }
+                break
+            }
+        }
+    }
+
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         if output === audioOutput {
             do { try movie?.appendAudio(sampleBuffer) }
@@ -504,6 +537,19 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
         guard let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer), now = hostTime(for:pts)
+        if configuration.showDetectedText && now-lastTextTime >= 0.75 {
+            lastTextTime = now
+            let retained = buffer
+            textQueue.async { [weak self] in
+                guard let self else { return }
+                let lines = self.textDetector.recognize(retained)
+                DispatchQueue.main.async { [weak self] in self?.onText?(lines) }
+            }
+        }
+        if #available(iOS 26.0, *), configuration.smartFraming && now-lastSmartFramingTime >= 0.35 {
+            lastSmartFramingTime = now
+            AdvancedCameraSupport.applySmartFramingIfNeeded(configuration,engine:self)
+        }
         autoreleasepool {
             do {
                 let frame = try processor.process(buffer:buffer,hostTime:now)
@@ -516,6 +562,18 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                     var info = frame.diagnostics
                     info.recordingSeconds = movie?.duration ?? 0
                     info.droppedFrames += movie?.droppedFrames ?? 0
+                    if #available(iOS 26.0, *), let device = videoInput?.device, device.activeFormat.isCameraLensSmudgeDetectionSupported {
+                        switch device.cameraLensSmudgeDetectionStatus {
+                        case .smudged: info.lensStatus = "Clean lens"
+                        case .smudgeNotDetected: info.lensStatus = "Clear"
+                        case .unknown: info.lensStatus = configuration.lensCleaningHints ? "Checking" : "Off"
+                        case .disabled: info.lensStatus = "Off"
+                        @unknown default: info.lensStatus = "Unknown"
+                        }
+                    }
+                    if #available(iOS 26.0, *), configuration.smartFraming {
+                        info.smartFramingStatus = videoInput?.device.smartFramingMonitor?.recommendedFraming == nil ? "Monitoring" : "Recommended"
+                    }
                     DispatchQueue.main.async { [weak self] in self?.onDiagnostics?(info) }
                 }
             } catch { report(error.localizedDescription); stopRecording() }
