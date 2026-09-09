@@ -107,10 +107,16 @@ final class AdvancedCameraTests: XCTestCase {
     }
 
     func testApproximationModesNormalizeWithoutPretendingNativePipelines() {
-        var action=CameraSettings(); let a0=action; action.mode = .action; action.zoomLock=true; action.colorProfile = .hdrHLG; action.codec = .proRes422
+        var action=CameraSettings(); let a0=action
+        action.mode = .video; action.actionStabilization = true; action.actionNativeAssist = true; action.actionStrength = 0.9
+        action.zoomLock=true; action.colorProfile = .hdrHLG; action.codec = .proRes422; action.audioMode = .stereo
         action.normalize(changedFrom:a0)
-        XCTAssertTrue(action.horizonLock); XCTAssertFalse(action.zoomLock); XCTAssertEqual(action.stabilization,.off)
-        XCTAssertEqual(action.codec,.efficient); XCTAssertEqual(action.colorProfile,.sdr); XCTAssertLessThan(action.reserve,0.86)
+        XCTAssertTrue(action.actionStabilization); XCTAssertTrue(action.actionNativeAssist); XCTAssertFalse(action.zoomLock)
+        XCTAssertEqual(action.codec,.efficient); XCTAssertEqual(action.colorProfile,.sdr); XCTAssertEqual(action.audioMode,.mono)
+        XCTAssertEqual(action.actionStrength,0.9,accuracy:0.001); XCTAssertLessThan(action.reserve,0.86)
+
+        var legacy=CameraSettings(); let legacyOld=legacy; legacy.mode = .action; legacy.normalize(changedFrom:legacyOld)
+        XCTAssertEqual(legacy.mode,.video); XCTAssertTrue(legacy.actionStabilization); XCTAssertTrue(legacy.horizonLock)
 
         var dual=CameraSettings(); let d0=dual; dual.mode = .dualCapture; dual.resolution = .ultraHD; dual.audioMode = .spatial
         dual.normalize(changedFrom:d0)
@@ -131,7 +137,8 @@ final class AdvancedCameraTests: XCTestCase {
     }
 
     func testApproximationSettingsRoundTripThroughCodableAndMigrationDefaults() throws {
-        var s=CameraSettings(); s.photographicStyle = .richContrast; s.styleIntensity=0.7; s.portraitLighting = .contour; s.actionStrength=0.9; s.dualCaptureLayout = .splitVertical
+        var s=CameraSettings(); s.photographicStyle = .richContrast; s.styleIntensity=0.7; s.portraitLighting = .contour
+        s.actionStabilization = true; s.actionNativeAssist = false; s.actionStrength=0.9; s.dualCaptureLayout = .splitVertical
         let decoded=try JSONDecoder().decode(CameraSettings.self,from:JSONEncoder().encode(s)); XCTAssertEqual(decoded,s)
         let old = #"{"mode":"PHOTO","grid":false}"#.data(using:.utf8)!
         let migrated=try XCTUnwrap(CameraModel.decodeSettingsMigrating(old))
@@ -145,6 +152,23 @@ final class AdvancedCameraTests: XCTestCase {
         let m=try XCTUnwrap(history.sample(at:1.5))
         XCTAssertEqual(m.rateX,3,accuracy:0.001); XCTAssertEqual(m.rateY,4,accuracy:0.001); XCTAssertEqual(m.rateZ,2,accuracy:0.001)
         XCTAssertLessThan(abs(AngleMath.wrap(m.yaw)-Double.pi),0.11)
+    }
+
+    func testActionTickDefaultsMigrationAndLiveStrengthPolicy() throws {
+        let defaults=CameraSettings()
+        XCTAssertFalse(defaults.actionStabilization); XCTAssertTrue(defaults.actionNativeAssist); XCTAssertEqual(defaults.actionStrength,0.75,accuracy:0.001)
+        XCTAssertFalse(CameraMode.visibleCases.contains(.action))
+
+        let legacyJSON = #"{"mode":"ACTION","actionStrength":0.6,"horizonLock":true}"#.data(using:.utf8)!
+        let migrated=try XCTUnwrap(CameraModel.decodeSettingsMigrating(legacyJSON))
+        XCTAssertEqual(migrated.mode,.video); XCTAssertTrue(migrated.actionStabilization); XCTAssertTrue(migrated.horizonLock)
+        XCTAssertEqual(migrated.actionStrength,0.6,accuracy:0.001)
+
+        var action=CameraSettings(); action.horizonLock=false; let before=action; action.actionStabilization=true; action.normalize(changedFrom:before)
+        var adjusted=action; let actionBefore=adjusted; adjusted.actionStrength=0.95; adjusted.normalize(changedFrom:actionBefore)
+        XCTAssertFalse(adjusted.requiresCaptureReconfiguration(comparedTo:action))
+        var nativeToggle=adjusted; nativeToggle.actionNativeAssist.toggle()
+        XCTAssertTrue(nativeToggle.requiresCaptureReconfiguration(comparedTo:adjusted))
     }
 
     func testDolbyVisionProfileForcesHEVCNativePipeline() {

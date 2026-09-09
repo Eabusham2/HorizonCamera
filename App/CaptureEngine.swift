@@ -259,9 +259,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                         device.position == .front && settings.mirrorSelfie && !settings.isProcessedPhoto
                 }
                 if connection.isVideoStabilizationSupported {
-                    // Native EIS changes the crop and its timing. Do not combine
-                    // that unknown transform with our sensor/subject transform.
-                    connection.preferredVideoStabilizationMode = settings.horizonLock || settings.zoomLock ? .off : .standard
+                    connection.preferredVideoStabilizationMode = NativeMovieController.preferredStabilization(settings,format:format)
                 }
             }
             if photoOutput.isDepthDataDeliverySupported { photoOutput.isDepthDataDeliveryEnabled = settings.depthData && !settings.raw }
@@ -281,7 +279,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         try applyControls(settings, device: device)
         let changedSource = configuration.captureFPS != settings.captureFPS || configuration.resolution != settings.resolution ||
             configuration.horizonLock != settings.horizonLock || configuration.zoomLock != settings.zoomLock ||
-            previousDeviceID != device.uniqueID
+            configuration.actionStabilization != settings.actionStabilization || previousDeviceID != device.uniqueID
         configuration = settings
         frameQueue.sync { [self] in
             if changedSource { processor.resetGeometry() }
@@ -439,8 +437,8 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 frameQueue.async { [self] in
                     do {
                         guard processor.lastPlan != nil else { throw CameraFailure.message("Wait for the camera preview before recording.") }
-                        if settings.horizonLock && motion.sample(at:CMClockGetTime(CMClockGetHostTimeClock()).seconds) == nil {
-                            throw CameraFailure.message("Motion data is not ready. Enable Motion permission or turn Horizon Lock off.")
+                        if (settings.horizonLock || settings.actionStabilization) && motion.sample(at:CMClockGetTime(CMClockGetHostTimeClock()).seconds) == nil {
+                            throw CameraFailure.message("Motion data is not ready. Enable Motion permission or turn sensor-driven stabilization off.")
                         }
                         processor.beginRecording()
                         movie = try MovieRecorder(url:url,settings:settings,renderer:renderer,microphoneAvailable:microphoneAvailable)

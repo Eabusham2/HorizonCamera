@@ -85,7 +85,16 @@ import Combine
                   let saved = try JSONSerialization.jsonObject(with:data) as? [String:Any] else { return nil }
             defaults.merge(saved) { _,new in new }
             let merged = try JSONSerialization.data(withJSONObject:defaults)
-            return try JSONDecoder().decode(CameraSettings.self,from:merged)
+            var decoded = try JSONDecoder().decode(CameraSettings.self,from:merged)
+            if decoded.mode == .action {
+                let old = decoded
+                decoded.mode = .video
+                decoded.actionStabilization = true
+                decoded.horizonLock = true
+                decoded.zoomLock = false
+                decoded.normalize(changedFrom:old)
+            }
+            return decoded
         } catch { return nil }
     }
 
@@ -159,16 +168,16 @@ import Combine
 
     func selectMode(_ mode: CameraMode) {
         if mode == .slowMotion && capabilities.supportedSlowMotionFPS.isEmpty { notice = "This lens does not support high-frame-rate slow motion."; return }
-        if mode == .action && capabilities.supportedFPS.isEmpty { notice = "Action approximation is unavailable with this lens/format."; return }
         if mode == .cinematic && !capabilities.cinematic { notice = "Cinematic Video requires a supported iPhone, lens, and format on iOS 26+."; return }
         if mode == .portrait && !capabilities.depthData { notice = "Portrait depth capture is not supported by this lens/format."; return }
         if mode == .spatial && !capabilities.spatialVideo { notice = "Spatial Video is not available with this lens/format."; return }
         if mode == .spatialPhoto && !capabilities.spatialPhoto { notice = "Spatial Photo needs a supported multi-camera iPhone."; return }
         if mode == .dualCapture && !capabilities.multiCam { notice = "Dual Capture needs MultiCam support on this iPhone."; return }
-        change {
-            $0.mode = mode; $0.torch = false
-            if mode == .action { $0.fps = capabilities.supportedFPS.contains(60) ? 60 : (capabilities.supportedFPS.contains(30) ? 30 : ($0.fps)); $0.resolution = capabilities.supportedResolutions.contains(.fullHD) ? .fullHD : $0.resolution }
+        if mode == .action {
+            change { $0.mode = .video; $0.actionStabilization = true; $0.torch = false }
+            return
         }
+        change { $0.mode = mode; $0.torch = false }
     }
 
     func selectLens(_ lens: LensOption) {

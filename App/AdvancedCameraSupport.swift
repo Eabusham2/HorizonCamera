@@ -78,6 +78,26 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
         return result
     }
 
+    /// Public AVFoundation does not expose Apple's stock Camera Action Mode.
+    /// For the Action tick, request the strongest stabilization mode this active
+    /// format actually reports, then layer HorizonCamera's gyro/crop correction on top.
+    static func preferredActionNativeStabilization(for format: AVCaptureDevice.Format) -> AVCaptureVideoStabilizationMode {
+        if #available(iOS 18.0, *), format.isVideoStabilizationModeSupported(.cinematicExtendedEnhanced) { return .cinematicExtendedEnhanced }
+        for mode: AVCaptureVideoStabilizationMode in [.cinematicExtended, .cinematic, .standard, .auto] {
+            if format.isVideoStabilizationModeSupported(mode) { return mode }
+        }
+        return .off
+    }
+
+    static func preferredStabilization(_ settings: CameraSettings, format: AVCaptureDevice.Format) -> AVCaptureVideoStabilizationMode {
+        if settings.actionStabilization {
+            return settings.actionNativeAssist ? preferredActionNativeStabilization(for:format) : .off
+        }
+        if settings.horizonLock || settings.zoomLock { return .off }
+        let requested = settings.stabilization.avMode
+        return format.isVideoStabilizationModeSupported(requested) ? requested : .off
+    }
+
     static func applyLiveSettings(_ settings: CameraSettings, engine: CaptureEngine) {
         engine.sessionQueue.async {
             guard let videoInput = engine.session.inputs.compactMap({ $0 as? AVCaptureDeviceInput }).first(where: { $0.ports.contains(where: { $0.mediaType == .video }) }) else { return }
@@ -138,7 +158,7 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                 engine.session.commitConfiguration()
             }
             for connection in engine.session.outputs.compactMap({ $0.connection(with: .video) }) where connection.isVideoStabilizationSupported {
-                connection.preferredVideoStabilizationMode = settings.horizonLock || settings.zoomLock ? .off : settings.stabilization.avMode
+                connection.preferredVideoStabilizationMode = preferredStabilization(settings,format:device.activeFormat)
             }
             if #available(iOS 26.0, *), let audioInput = engine.session.inputs.compactMap({ $0 as? AVCaptureDeviceInput }).first(where: { $0.ports.contains(where: { $0.mediaType == .audio }) }) {
                 let requested: AVCaptureMultichannelAudioMode = settings.audioMode == .spatial ? .firstOrderAmbisonics : (settings.audioMode == .stereo ? .stereo : .none)
@@ -216,7 +236,7 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                 session.commitConfiguration()
 
                 if let connection = movie.connection(with: .video) {
-                    if connection.isVideoStabilizationSupported { connection.preferredVideoStabilizationMode = settings.stabilization.avMode }
+                    if connection.isVideoStabilizationSupported { connection.preferredVideoStabilizationMode = Self.preferredStabilization(settings,format:videoInput.device.activeFormat) }
                     let rotation: CGFloat = settings.videoFraming == .portrait ? 90 : 0
                     if connection.isVideoRotationAngleSupported(rotation) { connection.videoRotationAngle = rotation }
                     movie.setRecordsVideoOrientationAndMirroringChangesAsMetadataTrack(true, for: connection)

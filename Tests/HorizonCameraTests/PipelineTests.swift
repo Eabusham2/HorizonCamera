@@ -347,6 +347,18 @@ final class PipelineTests: XCTestCase {
         XCTAssertGreaterThan(pixel(pip,Point2(350,530),renderer:renderer)[2],180)
     }
 
+    func testActionStrengthUsesMoreStabilizationReserveWithoutChangingOutputSize() throws {
+        var low=CameraSettings(); low.mode = .video; low.horizonLock=false; let l0=low; low.actionStabilization=true; low.actionStrength=0; low.normalize(changedFrom:l0)
+        var high=low; let h0=high; high.actionStrength=1; high.normalize(changedFrom:h0)
+        XCTAssertGreaterThan(low.reserve,high.reserve)
+        let source=Size2(2160,3840), output=low.outputSize
+        let lowPlan=try CropGeometry.plan(source:source,output:output,angle:0,zoom:1,fullTurn:false,reserve:low.reserve)
+        let highPlan=try CropGeometry.plan(source:source,output:output,angle:0,zoom:1,fullTurn:false,reserve:high.reserve)
+        XCTAssertEqual(lowPlan.output,highPlan.output)
+        XCTAssertLessThan(highPlan.sourceDetail.width,lowPlan.sourceDetail.width)
+        XCTAssertLessThan(highPlan.sourceDetail.height,lowPlan.sourceDetail.height)
+    }
+
     func testSpatialPhotoEncoderCreatesTwoImageStereoHEIC() throws {
         guard #available(iOS 18.0,*) else { throw XCTSkip("Spatial ImageIO metadata requires iOS 18") }
         let renderer=try makeRenderer(), leftCI=pattern(width:320,height:180)

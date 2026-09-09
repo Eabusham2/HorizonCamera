@@ -168,13 +168,20 @@ struct CameraView: View {
             Slider(value:Binding(get:{ model.settings.zoom },set:{ model.zoom($0) }),in:1...12)
                 .tint(.yellow).disabled(model.busy || model.state == .stopped)
                 .accessibilityLabel("Digital zoom")
-            HStack(spacing:10) {
-                lockButton("Horizon Lock",enabled:model.settings.horizonLock) { model.change { $0.horizonLock.toggle() } }
-                lockButton("Zoom Lock",enabled:model.settings.zoomLock) { model.change { $0.zoomLock.toggle() } }
+            HStack(spacing:8) {
+                lockButton("Horizon",enabled:model.settings.horizonLock,disabled:model.settings.usesNativeMoviePipeline || model.settings.mode == .portrait || model.settings.mode.isStandaloneCaptureMode) { model.change { $0.horizonLock.toggle() } }
+                lockButton("Zoom Lock",enabled:model.settings.zoomLock,disabled:model.settings.usesNativeMoviePipeline || model.settings.mode == .portrait || model.settings.mode.isStandaloneCaptureMode || model.settings.actionStabilization) { model.change { $0.zoomLock.toggle() } }
+                lockButton("Action",enabled:model.settings.actionStabilization,disabled:model.settings.mode != .video) { model.change { $0.actionStabilization.toggle() } }
+            }
+            if model.settings.actionStabilization {
+                HStack(spacing:10) {
+                    Text(String(format:"Action %.0f%%",model.settings.actionStrength*100)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    Slider(value:model.binding(\.actionStrength),in:0...1,step:0.05).tint(.yellow)
+                }
             }
             ScrollView(.horizontal, showsIndicators:false) {
                 HStack(spacing:19) {
-                    ForEach(CameraMode.allCases) { mode in
+                    ForEach(CameraMode.visibleCases) { mode in
                         Button { model.selectMode(mode) } label: {
                             Text(mode.rawValue).font(.system(size:11,weight:.semibold))
                                 .foregroundStyle(mode == model.settings.mode ? .yellow:.white.opacity(0.75))
@@ -206,7 +213,7 @@ struct CameraView: View {
             }.foregroundStyle(.white)
         }
     }
-    private func lockButton(_ title:String,enabled:Bool,action:@escaping ()->Void) -> some View {
+    private func lockButton(_ title:String,enabled:Bool,disabled:Bool = false,action:@escaping ()->Void) -> some View {
         Button(action:action) {
             HStack(spacing:7) {
                 Image(systemName:enabled ? "checkmark.square.fill":"square")
@@ -214,7 +221,7 @@ struct CameraView: View {
             }.frame(maxWidth:.infinity).padding(.vertical,10)
                 .foregroundStyle(enabled ? .yellow:.white)
                 .background(enabled ? Color.yellow.opacity(0.13):Color.white.opacity(0.08),in:RoundedRectangle(cornerRadius:10))
-        }.disabled(!model.canConfigure || model.settings.usesNativeMoviePipeline || model.settings.mode == .portrait || model.settings.mode.isStandaloneCaptureMode || model.settings.mode == .action)
+        }.disabled(!model.canConfigure || disabled)
             .accessibilityValue(enabled ? "On":"Off")
     }
     private func statusPill(_ text:String,icon:String) -> some View {

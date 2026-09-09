@@ -218,6 +218,7 @@ final class FrameProcessor {
         let geometryReset = self.front != front || settings.framing != next.framing || settings.mirrorSelfie != next.mirrorSelfie
         if geometryReset { resetGeometry() }
         if settings.zoomLock != next.zoomLock { tracker.reset(); pendingTarget = nil; zoomAnchor = nil }
+        if settings.actionStabilization != next.actionStabilization { actionOffset = Point2(0,0); actionTimestamp = nil }
         self.settings = next; self.front = front
         if geometryReset { renderedZoom = next.zoom; zoomTimestamp = nil }
     }
@@ -253,7 +254,7 @@ final class FrameProcessor {
         } else {
             diagnostics.motionStatus = motion.available ? "Motion stale — holding angle" : "Motion unavailable"
         }
-        if settings.mode == .action, let reading {
+        if settings.actionStabilization, let reading {
             let dt = min(0.05,max(0,hostTime-(actionTimestamp ?? hostTime)))
             let gain = 0.10 + 0.22 * settings.actionStrength
             let decay = pow(0.12,dt)

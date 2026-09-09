@@ -35,7 +35,7 @@ HorizonCamera does **not** claim to clone Apple's proprietary image-processing a
 | Photo | ✅ Native maximum-quality still capture plus optional custom Horizon/Zoom/filter processing |
 | Portrait | ✅ Depth-capable Portrait mode plus **Portrait Lighting approximations** (Natural / Studio / Contour / Stage / Stage Mono / High-Key Mono) driven by the real Portrait Effects matte when available; exact Apple relighting/bokeh is not claimed |
 | Video | ✅ Custom stabilized/video-processing path or native AVFoundation path when advanced native features require it |
-| Action | ✅ **Action approximation**: Horizon Lock plus stronger reserved crop and timestamp-aligned three-axis gyro compensation; not Apple's private Action-mode algorithm |
+| Action stabilization | ✅ **Independent tick beside Horizon/Zoom** with a live strength slider (75% default). Uses reserved crop + timestamp-aligned three-axis gyro compensation and can layer the strongest native AVFoundation stabilization mode the active format reports; it is not Apple's private stock Action-mode algorithm |
 | Dual Capture | ✅ Separate `AVCaptureMultiCamSession` records simultaneous front + rear cameras with PIP / vertical split / horizontal split layouts |
 | Time-lapse | ✅ Frame-sampled time-lapse with configurable interval |
 | Slo-mo | ✅ 120 fps and 240 fps when the active iPhone/lens exposes them, retimed for 30 fps playback |
@@ -96,7 +96,7 @@ AVFoundation requires long pipeline reconfiguration for depth and semantic matte
 | Apple Log | ✅ Capability-gated; Log selection forces a compatible ProRes/native path |
 | Apple Log 2 | ✅ iOS 26+ when the active format reports it |
 | Native video stabilization | ✅ Off / Standard / Cinematic / Cinematic Extended plus iOS 18/26 modes when the format reports support |
-| Action stabilization | ✅ **Approximation** adds gyro-derived translational crop compensation and Horizon Lock on top of increased stabilization headroom |
+| Action stabilization | ✅ **Tick + 0–100% strength slider**. The custom path adds gyro-derived translational crop compensation and extra stabilization headroom; optional Native stabilization assist requests the strongest public AVFoundation mode reported by the active format |
 | Dual Capture | ✅ Simultaneous front/rear MultiCam composite recorded through the same tested movie writer |
 | Orientation/mirroring metadata track | ✅ Native movie output records changes; portrait/landscape rotation is explicitly configured |
 | Native movie digital zoom | ✅ Ramps the **physical capture device**, so saved Cinematic/Spatial/ProRes footage matches the native preview zoom instead of applying a preview-only crop |
@@ -164,7 +164,7 @@ HorizonCamera now implements close public-API approximations for several stock-C
 - **Photographic Styles / Scene Detection:** HorizonCamera provides tunable style recipes and live/saved rendering, but not Apple's proprietary current-generation style engine or automatic scene decisions.
 - **Portrait Lighting:** the app uses actual Portrait Effects mattes for relighting-style output, but Apple's exact depth refinement, hair/edge segmentation, relighting and bokeh renderer remain private.
 - **Panorama:** PANO performs a real motion-guided feather stitch, but it is not Apple's stock stitcher, exposure optimizer, sweep UI or private geometric correction.
-- **Action mode:** the app uses reserved crop, Horizon Lock and timestamp-aligned three-axis gyro crop compensation. Apple's exact EIS/ISP motion model remains private.
+- **Action Stabilization tick:** independent of the mode strip and adjustable from 0–100% (75% default). It uses reserved crop and timestamp-aligned three-axis gyro compensation; optional native assist layers the strongest publicly reported AVFoundation stabilization mode. Apple's exact stock Action-mode EIS/ISP model remains private.
 - **Dolby Vision:** the public path can request a Dolby Vision 8.4 / HLG-compatible HEVC Main10 stream with automatic HDR metadata insertion; Apple's exact Camera HDR tone mapping/look remains private and physical-device validation is required.
 - **Spatial Photo:** the app produces a two-image stereo HEIC with factory relative rear-camera extrinsics and spatial metadata, but captures from synchronized camera streams rather than Apple's stock still-fusion pipeline.
 - **Dual Capture:** the app really records simultaneous front + rear MultiCam streams and composites them; Apple's iPhone 17 stock UI/heuristics are not cloned.

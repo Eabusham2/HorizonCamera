@@ -31,19 +31,24 @@ struct CameraSettingsView: View {
             Toggle("Horizon Lock", isOn:model.binding(\.horizonLock))
                 .disabled(model.settings.usesNativeMoviePipeline || model.settings.mode == .portrait)
             Toggle("Zoom Lock", isOn:model.binding(\.zoomLock))
-                .disabled(model.settings.usesNativeMoviePipeline || model.settings.mode == .portrait)
-            if model.settings.mode == .action {
+                .disabled(model.settings.usesNativeMoviePipeline || model.settings.mode == .portrait || model.settings.actionStabilization)
+            Toggle("Action Stabilization", isOn:model.binding(\.actionStabilization))
+                .disabled(model.settings.mode != .video)
+            if model.settings.actionStabilization {
                 LabeledContent("Action strength",value:String(format:"%.0f%%",model.settings.actionStrength*100))
                 Slider(value:model.binding(\.actionStrength),in:0...1,step:0.05)
+                Toggle("Native stabilization assist",isOn:model.binding(\.actionNativeAssist))
+                Text("Native assist requests the strongest public AVFoundation stabilization mode reported by the active format. It is not Apple's private stock Camera Action Mode.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if model.settings.mode.isMovie {
                 Picker("Apple stabilization", selection:model.binding(\.stabilization)) {
                     ForEach(model.capabilities.supportedStabilizationModes) { Text($0.rawValue).tag($0) }
-                }.disabled(model.settings.horizonLock || model.settings.zoomLock || model.settings.mode == .action)
+                }.disabled(model.settings.horizonLock || model.settings.zoomLock || model.settings.actionStabilization)
             }
             Toggle("Show wide-view inset", isOn:model.binding(\.showOverview))
             Button("Reset crop and tracking") { model.resetFraming() }
-            Text("Horizon Lock and Zoom Lock are custom pixel transforms and affect saved output. Native Cinematic, Spatial, ProRes/Log and multichannel recording keep AVFoundation's native movie pipeline, so custom locks are disabled there instead of pretending they were applied.")
+            Text("Horizon Lock, Zoom Lock and Action Stabilization affect saved output. Action can layer HorizonCamera's gyro/crop correction over the strongest public native stabilization the active format supports. Native Cinematic, Spatial, ProRes/Log and multichannel recording keep AVFoundation's native movie pipeline, so incompatible custom transforms are disabled rather than shown as fake effects.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
