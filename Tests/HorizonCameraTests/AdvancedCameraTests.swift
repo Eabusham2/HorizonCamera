@@ -131,9 +131,9 @@ final class AdvancedCameraTests: XCTestCase {
     }
 
     func testApproximationSettingsRoundTripThroughCodableAndMigrationDefaults() throws {
-        var s=CameraSettings(); s.photographicStyle = .richContrast; s.styleIntensity=0.7; s.portraitLighting=.contour; s.actionStrength=0.9; s.dualCaptureLayout=.splitVertical
+        var s=CameraSettings(); s.photographicStyle = .richContrast; s.styleIntensity=0.7; s.portraitLighting = .contour; s.actionStrength=0.9; s.dualCaptureLayout = .splitVertical
         let decoded=try JSONDecoder().decode(CameraSettings.self,from:JSONEncoder().encode(s)); XCTAssertEqual(decoded,s)
-        let old=#"{"mode":"PHOTO","grid":false}"#.data(using:.utf8)!
+        let old = #"{"mode":"PHOTO","grid":false}"#.data(using:.utf8)!
         let migrated=try XCTUnwrap(CameraModel.decodeSettingsMigrating(old))
         XCTAssertEqual(migrated.photographicStyle,.standard); XCTAssertEqual(migrated.computationalPhoto,.off); XCTAssertEqual(migrated.portraitLighting,.natural)
     }
@@ -148,7 +148,7 @@ final class AdvancedCameraTests: XCTestCase {
     }
 
     func testDolbyVisionProfileForcesHEVCNativePipeline() {
-        var settings=CameraSettings(); let old=settings; settings.mode=.video; settings.colorProfile=.dolbyVision84; settings.codec=.compatible
+        var settings=CameraSettings(); let old=settings; settings.mode = .video; settings.colorProfile = .dolbyVision84; settings.codec = .compatible
         settings.normalize(changedFrom:old)
         XCTAssertEqual(settings.codec,.efficient); XCTAssertTrue(settings.usesNativeMoviePipeline); XCTAssertTrue(settings.colorProfile.isHDR)
     }
