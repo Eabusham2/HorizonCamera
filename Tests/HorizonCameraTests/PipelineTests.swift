@@ -293,4 +293,72 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(tiff[kCGImagePropertyTIFFArtist as String] as? String,"Horizon Tester")
     }
 
+    func testPhotographicStyleApproximationChangesSavedPixelsDeterministically() throws {
+        let renderer=try makeRenderer(), image=pattern(width:320,height:240)
+        var settings=CameraSettings(); settings.photographicStyle = .richContrast; settings.styleIntensity=1; settings.styleTone=0.2; settings.styleWarmth=-0.25
+        let styled=renderer.applyLook(image,settings:settings)
+        XCTAssertEqual(styled.extent,image.extent)
+        let p=Point2(80,60), original=pixel(image,p,renderer:renderer), changed=pixel(styled,p,renderer:renderer)
+        XCTAssertNotEqual(Array(original.prefix(3)),Array(changed.prefix(3)))
+    }
+
+    func testComputationalBracketFusionProducesFiniteSameExtentImage() throws {
+        let renderer=try makeRenderer(), base=pattern(width:320,height:240)
+        let biases=ComputationalPhotoMode.autoHDR.exposureBiases
+        let bracket=biases.map { base.applyingFilter("CIExposureAdjust",parameters:[kCIInputEVKey:$0]) }
+        let fused=try XCTUnwrap(renderer.fuseBracket(bracket,mode:.autoHDR))
+        XCTAssertEqual(fused.extent,base.extent)
+        let value=pixel(fused,Point2(100,100),renderer:renderer)
+        XCTAssertGreaterThan(value[3],250)
+    }
+
+    func testPortraitLightingUsesMatteForStageAndNaturalBlur() throws {
+        let renderer=try makeRenderer(), image=pattern(width:320,height:240)
+        let bounds=image.extent
+        let mask=CIImage(color:.white).cropped(to:CGRect(x:0,y:0,width:160,height:240))
+            .composited(over:CIImage(color:.black).cropped(to:bounds))
+        let stage=renderer.portraitLighting(image,matte:mask,style:.stage,blurRadius:12)
+        let subject=pixel(stage,Point2(80,120),renderer:renderer), background=pixel(stage,Point2(260,120),renderer:renderer)
+        XCTAssertGreaterThan(Int(subject[0])+Int(subject[1])+Int(subject[2]),20)
+        XCTAssertLessThan(Int(background[0])+Int(background[1])+Int(background[2]),20)
+        let natural=renderer.portraitLighting(image,matte:mask,style:.natural,blurRadius:18)
+        XCTAssertEqual(natural.extent,bounds)
+    }
+
+    func testPanoramaAssemblerCreatesWiderFeatheredImage() throws {
+        let renderer=try makeRenderer(), assembler=PanoramaAssembler(renderer:renderer,horizontalFOVDegrees:70,feather:0.55)
+        assembler.append(pattern(width:640,height:360),yaw:0)
+        assembler.append(pattern(width:640,height:360).applyingFilter("CIColorControls",parameters:[kCIInputBrightnessKey:0.03]),yaw:0.12)
+        assembler.append(pattern(width:640,height:360).applyingFilter("CIColorControls",parameters:[kCIInputBrightnessKey:-0.03]),yaw:0.24)
+        let output=try assembler.finish()
+        XCTAssertGreaterThan(output.extent.width,640); XCTAssertEqual(output.extent.height,360,accuracy:1)
+        XCTAssertGreaterThan(pixel(output,Point2(10,100),renderer:renderer)[3],240)
+    }
+
+    func testDualCaptureLayoutsPutFrontAndBackPixelsInExpectedRegions() throws {
+        let renderer=try makeRenderer()
+        let back=CIImage(color:CIColor(red:1,green:0,blue:0)).cropped(to:CGRect(x:0,y:0,width:200,height:300))
+        let front=CIImage(color:CIColor(red:0,green:0,blue:1)).cropped(to:CGRect(x:0,y:0,width:200,height:300))
+        let split=DualCaptureComposer.compose(back:back,front:front,layout:.splitVertical,canvas:CGSize(width:400,height:300))
+        XCTAssertGreaterThan(pixel(split,Point2(60,150),renderer:renderer)[0],240)
+        XCTAssertGreaterThan(pixel(split,Point2(340,150),renderer:renderer)[2],240)
+        let pip=DualCaptureComposer.compose(back:back,front:front,layout:.pictureInPicture,canvas:CGSize(width:400,height:600))
+        XCTAssertGreaterThan(pixel(pip,Point2(200,200),renderer:renderer)[0],200)
+        XCTAssertGreaterThan(pixel(pip,Point2(350,530),renderer:renderer)[2],180)
+    }
+
+    func testSpatialPhotoEncoderCreatesTwoImageStereoHEIC() throws {
+        guard #available(iOS 18.0,*) else { throw XCTSkip("Spatial ImageIO metadata requires iOS 18") }
+        let renderer=try makeRenderer(), leftCI=pattern(width:320,height:180), rightCI=pattern(width:320,height:180).transformed(by:CGAffineTransform(translationX:2,y:0)).cropped(to:CGRect(x:0,y:0,width:320,height:180))
+        let left=try XCTUnwrap(renderer.context.createCGImage(leftCI,from:leftCI.extent,format:.RGBA8,colorSpace:renderer.colorSpace))
+        let right=try XCTUnwrap(renderer.context.createCGImage(rightCI,from:rightCI.extent,format:.RGBA8,colorSpace:renderer.colorSpace))
+        let data=try SpatialPhotoEncoder.encode(left:left,right:right,commonFOV:70,rightPosition:[0.025,0,0],rightRotation:[1,0,0,0,1,0,0,0,1],settings:CameraSettings())
+        let source=try XCTUnwrap(CGImageSourceCreateWithData(data as CFData,nil)); XCTAssertEqual(CGImageSourceGetCount(source),2)
+        let lp=try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source,0,nil) as? [CFString:Any])
+        let rp=try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source,1,nil) as? [CFString:Any])
+        let lg=try XCTUnwrap(lp[kCGImagePropertyGroups] as? [CFString:Any]), rg=try XCTUnwrap(rp[kCGImagePropertyGroups] as? [CFString:Any])
+        XCTAssertEqual(lg[kCGImagePropertyGroupType] as? String,kCGImagePropertyGroupTypeStereoPair as String)
+        XCTAssertEqual(lg[kCGImagePropertyGroupImageIsLeftImage] as? Bool,true); XCTAssertEqual(rg[kCGImagePropertyGroupImageIsRightImage] as? Bool,true)
+    }
+
 }

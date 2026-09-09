@@ -29,8 +29,10 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var configured = false
     private var reportedCapabilities = CameraCapabilities()
     private var photoJobs: [Int64: PhotoCapture] = [:]
+    private var bracketJobs: [Int64: BracketPhotoCapture] = [:]
     private var notifications: [NSObjectProtocol] = []
     private var movie: MovieRecorder? // frameQueue only
+    private var panorama: PanoramaAssembler? // frameQueue only
     private var lastDiagnosticsTime = 0.0
     private var lastSpaceCheck = 0.0
     private var lastTextTime = 0.0
@@ -120,6 +122,19 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             if microphoneAllowed { try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation) }
             if state != .finishing && state != .takingPhoto { setState(.stopped) }
             frameQueue.async { [self] in processor.preview.publish(nil) }
+        }
+    }
+
+    func pauseForExternalCapture(_ completion: @escaping () -> Void) {
+        sessionQueue.async { [self] in
+            wantedRunning = false
+            if state == .recording { stopRecordingLocked() }
+            if session.isRunning { session.stopRunning() }
+            motion.stop()
+            if microphoneAllowed { try? AVAudioSession.sharedInstance().setActive(false,options:.notifyOthersOnDeactivation) }
+            if state != .finishing && state != .takingPhoto { setState(.stopped) }
+            frameQueue.async { [self] in processor.preview.publish(nil) }
+            DispatchQueue.main.async { completion() }
         }
     }
     func update(_ settings: CameraSettings, lensID: String? = nil) {
@@ -289,6 +304,10 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         capabilities.livePhoto = photoOutput.isLivePhotoCaptureSupported
         capabilities.raw = !photoOutput.availableRawPhotoPixelFormatTypes.isEmpty
         capabilities.qrScanning = metadataOutput.availableMetadataObjectTypes.contains(.qr)
+        capabilities.maxBracketedCaptureCount = photoOutput.maxBracketedCapturePhotoCount
+        capabilities.bracketedCapture = photoOutput.maxBracketedCapturePhotoCount >= 2
+        capabilities.multiCam = AVCaptureMultiCamSession.isMultiCamSupported
+        capabilities.spatialPhoto = AVCaptureMultiCamSession.isMultiCamSupported && devices.filter { $0.position == .back && !$0.isVirtualDevice }.count >= 2
         capabilities.manualFocus = device.isLockingFocusWithCustomLensPositionSupported
         capabilities.maxISO = format.maxISO; capabilities.minISO = format.minISO
         capabilities.minEV = device.minExposureTargetBias; capabilities.maxEV = device.maxExposureTargetBias
@@ -370,6 +389,45 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             }
         }
     }
+    func startPanorama() {
+        sessionQueue.async { [self] in
+            guard state == .ready, session.isRunning, configuration.mode == .panorama, let device = videoInput?.device else { return }
+            guard motion.sample(at:CMClockGetTime(CMClockGetHostTimeClock()).seconds) != nil else {
+                report("Motion data is not ready. Panorama needs device motion to track the sweep."); return
+            }
+            do { try MediaFiles.requireSpace() }
+            catch { report(error.localizedDescription); return }
+            let fov = Double(device.activeFormat.videoFieldOfView), settings = configuration
+            setState(.recording)
+            frameQueue.async { [self] in
+                panorama = PanoramaAssembler(renderer:renderer,horizontalFOVDegrees:fov,feather:settings.panoramaFeather)
+            }
+        }
+    }
+
+    private func stopPanoramaLocked() {
+        guard state == .recording, configuration.mode == .panorama else { return }
+        setState(.finishing)
+        let settings = configuration
+        frameQueue.async { [self] in
+            guard let capture = panorama else {
+                sessionQueue.async { [self] in setState(wantedRunning ? .ready : .stopped) }; return
+            }
+            panorama = nil
+            do {
+                var image = try capture.finish()
+                image = renderer.applyLook(image,settings:settings)
+                guard let encoded = CaptureMetadata.encodeProcessed(image,renderer:renderer,efficient:settings.codec == .efficient,settings:settings) else {
+                    throw CameraFailure.message("The panorama could not be encoded.")
+                }
+                let url = try MediaFiles.newURL(extension:encoded.1)
+                try encoded.0.write(to:url,options:.atomic)
+                deliver(.success(MediaDraft(url:url,isVideo:false,summary:"Panorama approximation · \(capture.count) motion-guided frames")))
+            } catch { deliver(.failure(error)) }
+            sessionQueue.async { [self] in setState(wantedRunning ? .ready : .stopped) }
+        }
+    }
+
     func startRecording() {
         sessionQueue.async { [self] in
             guard state == .ready, session.isRunning else { return }
@@ -399,6 +457,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     func stopRecording() { sessionQueue.async { [self] in stopRecordingLocked() } }
     private func stopRecordingLocked() {
         guard state == .recording else { return }
+        if configuration.mode == .panorama { stopPanoramaLocked(); return }
         setState(.finishing)
         frameQueue.async { [self] in
             guard let recorder = movie else {
@@ -414,6 +473,58 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             }
         }
     }
+    private func computationalBiases(_ mode: ComputationalPhotoMode, maxCount: Int) -> [Float] {
+        guard maxCount >= 2 else { return [] }
+        switch mode {
+        case .off: return []
+        case .autoHDR: return maxCount >= 3 ? [-2,0,2] : [-1.5,1.5]
+        case .night:
+            if maxCount >= 5 { return [-0.7,-0.35,0,0.35,0.7] }
+            if maxCount >= 3 { return [-0.7,0,0.7] }
+            return [-0.4,0.4]
+        case .detailFusion: return maxCount >= 3 ? [-0.35,0,0.35] : [-0.25,0.25]
+        }
+    }
+
+    private func captureComputationalPhoto(_ config: CameraSettings, codec: AVVideoCodecType) throws -> Bool {
+        let biases = computationalBiases(config.computationalPhoto,maxCount:photoOutput.maxBracketedCapturePhotoCount)
+        guard biases.count >= 2 else { return false }
+        let bracket = biases.map { AVCaptureAutoExposureBracketedStillImageSettings.autoExposureSettings(exposureTargetBias:$0) }
+        let settings = AVCapturePhotoBracketSettings(rawPixelFormatType:0,processedFormat:[AVVideoCodecKey:codec],bracketedSettings:bracket)
+        if photoOutput.isLensStabilizationDuringBracketedCaptureSupported { settings.isLensStabilizationEnabled = true }
+        let id = settings.uniqueID
+        let delegate = BracketPhotoCapture(id:id,settings:config) { [weak self] result in
+            guard let self else { return }
+            self.frameQueue.async { [self] in
+                do { self.deliver(.success(try self.saveComputationalPhoto(try result.get()))) }
+                catch { self.deliver(.failure(error)) }
+                self.sessionQueue.async { [self] in
+                    self.bracketJobs.removeValue(forKey:id)
+                    self.setState(self.wantedRunning ? .ready : .stopped)
+                }
+            }
+        }
+        bracketJobs[id] = delegate
+        setState(.takingPhoto)
+        photoOutput.capturePhoto(with:settings,delegate:delegate)
+        return true
+    }
+
+    private func saveComputationalPhoto(_ packet: BracketPhotoPacket) throws -> MediaDraft {
+        let decoded = packet.images.compactMap { CIImage(data:$0,options:[.applyOrientationProperty:true]) }
+        guard decoded.count == packet.images.count, let fused = renderer.fuseBracket(decoded,mode:packet.settings.computationalPhoto) else {
+            throw CameraFailure.message("The computational photo frames could not be fused.")
+        }
+        let host = packet.timestamps.isEmpty ? CMClockGetTime(CMClockGetHostTimeClock()).seconds : hostTime(for:packet.timestamps[packet.timestamps.count/2])
+        let processed = try processor.processPhoto(fused,hostTime:host)
+        guard let encoded = CaptureMetadata.encodeProcessed(processed,renderer:renderer,efficient:packet.settings.codec == .efficient,settings:packet.settings,sourceData:packet.images.first) else {
+            throw CameraFailure.message("The fused computational photo could not be encoded.")
+        }
+        let url = try MediaFiles.newURL(extension:encoded.1)
+        try encoded.0.write(to:url,options:.atomic)
+        return MediaDraft(url:url,isVideo:false,summary:"\(packet.settings.computationalPhoto.rawValue) · \(packet.images.count)-frame bracket fusion")
+    }
+
     func capturePhoto() {
         sessionQueue.async { [self] in
             guard state == .ready, let device = videoInput?.device else { return }
@@ -421,6 +532,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 try MediaFiles.requireSpace()
                 let config = configuration
                 let codec: AVVideoCodecType = config.codec == .efficient && photoOutput.availablePhotoCodecTypes.contains(.hevc) ? .hevc : .jpeg
+                if config.usesBracketedPhotoPipeline, try captureComputationalPhoto(config,codec:codec) { return }
                 let settings: AVCapturePhotoSettings
                 if config.raw && !config.livePhoto && !config.isProcessedPhoto {
                     let types = photoOutput.availableRawPhotoPixelFormatTypes
@@ -486,12 +598,17 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         var data = packet.data
         var suffix = data.starts(with:[0xff,0xd8]) ? "jpg" : "heic"
         if packet.settings.isProcessedPhoto {
-            guard let image = CIImage(data:data,options:[.applyOrientationProperty:true]) else { throw CameraFailure.message("Cannot decode this still image.") }
+            guard var image = CIImage(data:data,options:[.applyOrientationProperty:true]) else { throw CameraFailure.message("Cannot decode this still image.") }
+            if packet.settings.mode == .portrait || packet.settings.portraitLighting != .natural {
+                let matte = packet.portraitEffectsMatte.map { CIImage(cvPixelBuffer:$0.mattingImage) }
+                image = renderer.portraitLighting(image,matte:matte,style:packet.settings.portraitLighting,blurRadius:packet.settings.portraitBlurRadius)
+            }
             let processed = try processor.processPhoto(image,hostTime:hostTime(for:packet.timestamp))
             if let encoded = CaptureMetadata.encodeProcessed(processed, renderer: renderer,
-                efficient: packet.settings.codec == .efficient, settings: packet.settings, sourceData: data) {
+                efficient: packet.settings.codec == .efficient, settings: packet.settings, sourceData: data,
+                depthData:packet.depthData, portraitEffectsMatte:packet.portraitEffectsMatte) {
                 data = encoded.0; suffix = encoded.1
-            } else { throw CameraFailure.message("Cannot encode the stabilized photo.") }
+            } else { throw CameraFailure.message("Cannot encode the processed photo.") }
         }
         let url = try MediaFiles.newURL(extension:suffix)
         try data.write(to:url,options:.atomic)
@@ -506,6 +623,8 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         if packet.settings.semanticMattes { features.append("semantic mattes") }
         if packet.hasCalibrationData { features.append("calibration") }
         if packet.settings.constantColor { features.append("Constant Color") }
+        if packet.settings.mode == .portrait { features.append("\(packet.settings.portraitLighting.rawValue) lighting approx") }
+        if packet.settings.hasCustomStyle { features.append("\(packet.settings.photographicStyle.rawValue) style approx") }
         if packet.rawData != nil { features.append(packet.settings.preferProRAW ? "Apple ProRAW" : "RAW") }
         let suffixSummary = features.isEmpty ? "" : " · " + features.joined(separator: ", ")
         return MediaDraft(url:url,liveMovie:packet.liveMovie,raw:rawURL,
@@ -553,6 +672,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         autoreleasepool {
             do {
                 let frame = try processor.process(buffer:buffer,hostTime:now)
+                if let panorama, let reading = motion.sample(at:now) { panorama.append(frame.overview,yaw:reading.yaw) }
                 try movie?.appendVideo(frame.image,sourcePTS:pts)
                 if movie != nil && now-lastSpaceCheck > 5 {
                     lastSpaceCheck = now; try MediaFiles.requireSpace()

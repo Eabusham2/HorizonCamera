@@ -10,6 +10,8 @@ struct PhotoPacket {
     let hasDepthData: Bool
     let hasPortraitEffectsMatte: Bool
     let hasCalibrationData: Bool
+    let depthData: AVDepthData?
+    let portraitEffectsMatte: AVPortraitEffectsMatte?
 }
 final class PhotoCapture: NSObject, AVCapturePhotoCaptureDelegate {
     let id: Int64
@@ -23,6 +25,8 @@ final class PhotoCapture: NSObject, AVCapturePhotoCaptureDelegate {
     private var hasDepthData = false
     private var hasPortraitEffectsMatte = false
     private var hasCalibrationData = false
+    private var depthData: AVDepthData?
+    private var portraitEffectsMatte: AVPortraitEffectsMatte?
     private var error: Error?
     init(id: Int64, settings: CameraSettings, liveURL: URL?, completion: @escaping (Result<PhotoPacket, Error>) -> Void) {
         self.id = id; self.settings = settings; self.liveURL = liveURL; self.completion = completion
@@ -35,8 +39,10 @@ final class PhotoCapture: NSObject, AVCapturePhotoCaptureDelegate {
         }
         if photo.isRawPhoto { rawData = data } else {
             imageData = data; timestamp = photo.timestamp
-            hasDepthData = photo.depthData != nil
-            hasPortraitEffectsMatte = photo.portraitEffectsMatte != nil
+            depthData = photo.depthData
+            portraitEffectsMatte = photo.portraitEffectsMatte
+            hasDepthData = depthData != nil
+            hasPortraitEffectsMatte = portraitEffectsMatte != nil
             hasCalibrationData = photo.cameraCalibrationData != nil
         }
     }
@@ -49,11 +55,13 @@ final class PhotoCapture: NSObject, AVCapturePhotoCaptureDelegate {
         let failure = error ?? self.error
         let data = imageData, raw = rawData, time = timestamp
         let depth = hasDepthData, matte = hasPortraitEffectsMatte, calibration = hasCalibrationData
+        let capturedDepth = depthData, capturedMatte = portraitEffectsMatte
         lock.unlock()
         if let failure { completion(.failure(failure)) }
         else if let data {
             completion(.success(PhotoPacket(data: data, rawData: raw, liveMovie: liveURL, timestamp: time, settings: settings,
-                hasDepthData: depth, hasPortraitEffectsMatte: matte, hasCalibrationData: calibration)))
+                hasDepthData: depth, hasPortraitEffectsMatte: matte, hasCalibrationData: calibration,
+                depthData: capturedDepth, portraitEffectsMatte: capturedMatte)))
         } else { completion(.failure(CameraFailure.message("The photo did not finish processing."))) }
     }
 }

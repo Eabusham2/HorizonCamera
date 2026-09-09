@@ -21,7 +21,9 @@ final class MotionService: @unchecked Sendable {
             if let error { self.lastError = error.localizedDescription }
             guard let m = motion else { return }
             self.history.append(MotionReading(time: m.timestamp, gx: m.gravity.x, gy: m.gravity.y,
-                                              gz: m.gravity.z, rateZ: m.rotationRate.z))
+                                              gz: m.gravity.z, rateZ: m.rotationRate.z,
+                                              rateX: m.rotationRate.x, rateY: m.rotationRate.y,
+                                              yaw: m.attitude.yaw))
         }
     }
     func stop() {

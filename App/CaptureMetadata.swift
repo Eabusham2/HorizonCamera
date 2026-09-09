@@ -1,6 +1,7 @@
 import Foundation
 import ImageIO
 import CoreImage
+import AVFoundation
 import UniformTypeIdentifiers
 
 enum CaptureMetadata {
@@ -34,7 +35,8 @@ enum CaptureMetadata {
         return metadata
     }
 
-    static func encodeProcessed(_ image: CIImage, renderer: ImageRenderer, efficient: Bool, settings: CameraSettings, sourceData: Data? = nil) -> (Data, String)? {
+    static func encodeProcessed(_ image: CIImage, renderer: ImageRenderer, efficient: Bool, settings: CameraSettings, sourceData: Data? = nil,
+                                depthData: AVDepthData? = nil, portraitEffectsMatte: AVPortraitEffectsMatte? = nil) -> (Data, String)? {
         guard let cg = renderer.context.createCGImage(image, from: image.extent, format: .RGBA8, colorSpace: renderer.colorSpace) else { return nil }
         let data = NSMutableData()
         let type = efficient ? UTType.heic.identifier : UTType.jpeg.identifier
@@ -43,6 +45,18 @@ enum CaptureMetadata {
         if let sourceData, let source = CGImageSourceCreateWithData(sourceData as CFData,nil),
            let properties = CGImageSourceCopyPropertiesAtIndex(source,0,nil) as? [String:Any] { base = properties }
         CGImageDestinationAddImage(destination, cg, photo(settings,base:base) as CFDictionary)
+        if let depthData {
+            var type: NSString?
+            if let dictionary = depthData.dictionaryRepresentation(forAuxiliaryDataType:&type), let type {
+                CGImageDestinationAddAuxiliaryDataInfo(destination,type as CFString,dictionary as CFDictionary)
+            }
+        }
+        if let portraitEffectsMatte {
+            var type: NSString?
+            if let dictionary = portraitEffectsMatte.dictionaryRepresentation(forAuxiliaryDataType:&type), let type {
+                CGImageDestinationAddAuxiliaryDataInfo(destination,type as CFString,dictionary as CFDictionary)
+            }
+        }
         guard CGImageDestinationFinalize(destination) else { return nil }
         return (data as Data, efficient ? "heic" : "jpg")
     }

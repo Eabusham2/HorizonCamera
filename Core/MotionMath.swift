@@ -12,9 +12,13 @@ public struct MotionReading: Sendable {
     public let gx: Double
     public let gy: Double
     public let gz: Double
+    public let rateX: Double
+    public let rateY: Double
     public let rateZ: Double
-    public init(time: Double, gx: Double, gy: Double, gz: Double, rateZ: Double) {
-        self.time = time; self.gx = gx; self.gy = gy; self.gz = gz; self.rateZ = rateZ
+    public let yaw: Double
+    public init(time: Double, gx: Double, gy: Double, gz: Double, rateZ: Double, rateX: Double = 0, rateY: Double = 0, yaw: Double = 0) {
+        self.time = time; self.gx = gx; self.gy = gy; self.gz = gz
+        self.rateX = rateX; self.rateY = rateY; self.rateZ = rateZ; self.yaw = yaw
     }
 }
 
@@ -45,8 +49,11 @@ public struct MotionHistory: Sendable {
         let a = readings[lo], b = readings[hi]
         let f = (time - a.time) / (b.time - a.time)
         func lerp(_ x: Double, _ y: Double) -> Double { x + (y - x) * f }
+        let unwrappedYaw = AngleMath.unwrap(b.yaw, near: a.yaw)
         return MotionReading(time: time, gx: lerp(a.gx, b.gx), gy: lerp(a.gy, b.gy),
-                             gz: lerp(a.gz, b.gz), rateZ: lerp(a.rateZ, b.rateZ))
+                             gz: lerp(a.gz, b.gz), rateZ: lerp(a.rateZ, b.rateZ),
+                             rateX: lerp(a.rateX, b.rateX), rateY: lerp(a.rateY, b.rateY),
+                             yaw: lerp(a.yaw, unwrappedYaw))
     }
 }
 

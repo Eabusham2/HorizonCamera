@@ -32,10 +32,14 @@ struct CameraSettingsView: View {
                 .disabled(model.settings.usesNativeMoviePipeline || model.settings.mode == .portrait)
             Toggle("Zoom Lock", isOn:model.binding(\.zoomLock))
                 .disabled(model.settings.usesNativeMoviePipeline || model.settings.mode == .portrait)
+            if model.settings.mode == .action {
+                LabeledContent("Action strength",value:String(format:"%.0f%%",model.settings.actionStrength*100))
+                Slider(value:model.binding(\.actionStrength),in:0...1,step:0.05)
+            }
             if model.settings.mode.isMovie {
                 Picker("Apple stabilization", selection:model.binding(\.stabilization)) {
                     ForEach(model.capabilities.supportedStabilizationModes) { Text($0.rawValue).tag($0) }
-                }.disabled(model.settings.horizonLock || model.settings.zoomLock)
+                }.disabled(model.settings.horizonLock || model.settings.zoomLock || model.settings.mode == .action)
             }
             Toggle("Show wide-view inset", isOn:model.binding(\.showOverview))
             Button("Reset crop and tracking") { model.resetFraming() }
@@ -85,8 +89,11 @@ struct CameraSettingsView: View {
                         Text("0.5 seconds").tag(0.5); Text("1 second").tag(1.0); Text("2 seconds").tag(2.0); Text("5 seconds").tag(5.0)
                     }
                 }
+                if model.settings.mode == .dualCapture {
+                    Picker("Dual layout",selection:model.binding(\.dualCaptureLayout)) { ForEach(DualCaptureLayout.allCases) { Text($0.rawValue).tag($0) } }
+                }
             }
-            Text("Available choices come from the active iPhone lens/format. 25/50 fps appear when supported. ProRes and Apple Log use the native movie path. HDR here is HLG; it is not a claim of Apple's Dolby Vision Camera pipeline.")
+            Text("Available choices come from the active iPhone lens/format. 25/50 fps appear when supported. ProRes and Apple Log use the native movie path. Dolby Vision 8.4 requests HEVC Main10/Rec.2020 HLG with automatic HDR metadata insertion when the native encoder supports those keys; plain HDR remains HLG.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -98,6 +105,30 @@ struct CameraSettingsView: View {
             }
             Picker("Quality priority", selection:model.binding(\.photoQuality)) {
                 ForEach(PhotoQualityChoice.allCases) { Text($0.rawValue).tag($0) }
+            }
+            if model.settings.mode == .photo && model.capabilities.bracketedCapture {
+                Picker("Computational photo (approx)",selection:model.binding(\.computationalPhoto)) {
+                    ForEach(ComputationalPhotoMode.allCases) { Text($0.rawValue).tag($0) }
+                }
+                if model.settings.computationalPhoto != .off {
+                    Text("Uses AVFoundation exposure brackets plus HorizonCamera fusion. It approximates Night/Smart HDR/detail fusion; it is not Apple's private ISP/Neural Engine pipeline.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if model.settings.mode != .panorama && model.settings.mode != .spatialPhoto {
+                Picker("Photographic Style (approx)",selection:model.binding(\.photographicStyle)) { ForEach(PhotographicStyleApprox.allCases) { Text($0.rawValue).tag($0) } }
+                if model.settings.photographicStyle != .standard || model.settings.hasCustomStyle {
+                    LabeledContent("Style intensity",value:String(format:"%.0f%%",model.settings.styleIntensity*100)); Slider(value:model.binding(\.styleIntensity),in:0...1,step:0.05)
+                    LabeledContent("Tone",value:String(format:"%+.0f",model.settings.styleTone*100)); Slider(value:model.binding(\.styleTone),in:-1...1,step:0.05)
+                    LabeledContent("Warmth",value:String(format:"%+.0f",model.settings.styleWarmth*100)); Slider(value:model.binding(\.styleWarmth),in:-1...1,step:0.05)
+                }
+            }
+            if model.settings.mode == .portrait {
+                Picker("Portrait Lighting (approx)",selection:model.binding(\.portraitLighting)) { ForEach(PortraitLightingApprox.allCases) { Text($0.rawValue).tag($0) } }
+                LabeledContent("Background blur",value:String(format:"%.0f",model.settings.portraitBlurRadius)); Slider(value:model.binding(\.portraitBlurRadius),in:0...40,step:1)
+            }
+            if model.settings.mode == .panorama {
+                LabeledContent("Stitch feather",value:String(format:"%.0f%%",model.settings.panoramaFeather*100)); Slider(value:model.binding(\.panoramaFeather),in:0.1...0.9,step:0.05)
+                Text("PANO is a motion-guided feather stitch from overlapping live camera frames; it approximates the stock panorama workflow rather than Apple's private stitcher.").font(.caption).foregroundStyle(.secondary)
             }
             if !model.capabilities.supportedPhotoResolutionsMP.isEmpty {
                 Picker("Photo resolution", selection:model.binding(\.photoResolutionMP)) {
@@ -277,6 +308,7 @@ struct CameraSettingsView: View {
     private var availableColorProfiles: [VideoColorProfile] {
         var values: [VideoColorProfile] = [.sdr]
         if model.capabilities.hdrHLG && model.settings.mode == .video { values.append(.hdrHLG) }
+        if model.capabilities.dolbyVision && model.settings.mode == .video { values.append(.dolbyVision84) }
         if model.capabilities.proRes && model.settings.mode == .video {
             if model.capabilities.appleLog { values.append(.appleLog) }
             if model.capabilities.appleLog2 { values.append(.appleLog2) }

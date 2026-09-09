@@ -106,4 +106,51 @@ final class AdvancedCameraTests: XCTestCase {
         XCTAssertEqual(decoded,settings)
     }
 
+    func testApproximationModesNormalizeWithoutPretendingNativePipelines() {
+        var action=CameraSettings(); let a0=action; action.mode = .action; action.zoomLock=true; action.colorProfile = .hdrHLG; action.codec = .proRes422
+        action.normalize(changedFrom:a0)
+        XCTAssertTrue(action.horizonLock); XCTAssertFalse(action.zoomLock); XCTAssertEqual(action.stabilization,.off)
+        XCTAssertEqual(action.codec,.efficient); XCTAssertEqual(action.colorProfile,.sdr); XCTAssertLessThan(action.reserve,0.86)
+
+        var dual=CameraSettings(); let d0=dual; dual.mode = .dualCapture; dual.resolution = .ultraHD; dual.audioMode = .spatial
+        dual.normalize(changedFrom:d0)
+        XCTAssertEqual(dual.fps,30); XCTAssertEqual(dual.resolution,.fullHD); XCTAssertEqual(dual.audioMode,.mono)
+        XCTAssertTrue(dual.mode.isStandaloneCaptureMode); XCTAssertTrue(dual.mode.isMovie)
+
+        var pano=CameraSettings(); let p0=pano; pano.mode = .panorama; pano.raw=true; pano.livePhoto=true; pano.computationalPhoto = .night
+        pano.normalize(changedFrom:p0)
+        XCTAssertFalse(pano.raw); XCTAssertFalse(pano.livePhoto); XCTAssertEqual(pano.computationalPhoto,.off); XCTAssertTrue(pano.mode.isPhotoMode)
+    }
+
+    func testComputationalPhotoDisablesIncompatibleNativeExtras() {
+        var s=CameraSettings(); s.mode = .photo; s.horizonLock=false; let old=s
+        s.computationalPhoto = .autoHDR; s.raw=true; s.livePhoto=true; s.constantColor=true; s.flash = .on; s.depthData=true
+        s.normalize(changedFrom:old)
+        XCTAssertTrue(s.usesBracketedPhotoPipeline); XCTAssertFalse(s.raw); XCTAssertFalse(s.livePhoto); XCTAssertFalse(s.constantColor)
+        XCTAssertFalse(s.depthData); XCTAssertEqual(s.flash,.off); XCTAssertTrue(s.isProcessedPhoto)
+    }
+
+    func testApproximationSettingsRoundTripThroughCodableAndMigrationDefaults() throws {
+        var s=CameraSettings(); s.photographicStyle = .richContrast; s.styleIntensity=0.7; s.portraitLighting=.contour; s.actionStrength=0.9; s.dualCaptureLayout=.splitVertical
+        let decoded=try JSONDecoder().decode(CameraSettings.self,from:JSONEncoder().encode(s)); XCTAssertEqual(decoded,s)
+        let old=#"{"mode":"PHOTO","grid":false}"#.data(using:.utf8)!
+        let migrated=try XCTUnwrap(CameraModel.decodeSettingsMigrating(old))
+        XCTAssertEqual(migrated.photographicStyle,.standard); XCTAssertEqual(migrated.computationalPhoto,.off); XCTAssertEqual(migrated.portraitLighting,.natural)
+    }
+
+    func testMotionHistoryInterpolatesThreeAxisGyroAndYawAcrossWrap() throws {
+        var history=MotionHistory()
+        history.append(MotionReading(time:1,gx:0,gy:-1,gz:0,rateZ:1,rateX:2,rateY:3,yaw:Double.pi-0.1))
+        history.append(MotionReading(time:2,gx:0,gy:-1,gz:0,rateZ:3,rateX:4,rateY:5,yaw:-Double.pi+0.1))
+        let m=try XCTUnwrap(history.sample(at:1.5))
+        XCTAssertEqual(m.rateX,3,accuracy:0.001); XCTAssertEqual(m.rateY,4,accuracy:0.001); XCTAssertEqual(m.rateZ,2,accuracy:0.001)
+        XCTAssertLessThan(abs(AngleMath.wrap(m.yaw)-Double.pi),0.11)
+    }
+
+    func testDolbyVisionProfileForcesHEVCNativePipeline() {
+        var settings=CameraSettings(); let old=settings; settings.mode=.video; settings.colorProfile=.dolbyVision84; settings.codec=.compatible
+        settings.normalize(changedFrom:old)
+        XCTAssertEqual(settings.codec,.efficient); XCTAssertTrue(settings.usesNativeMoviePipeline); XCTAssertTrue(settings.colorProfile.isHDR)
+    }
+
 }

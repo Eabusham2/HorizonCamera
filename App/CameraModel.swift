@@ -20,6 +20,8 @@ import Combine
     let renderer: ImageRenderer?
     let engine: CaptureEngine?
     private let nativeMovie = NativeMovieController()
+    private let dualCapture = DualCaptureController()
+    private let spatialPhotoCapture = SpatialPhotoController()
     private var requesting = false
     private var timerTask: Task<Void, Never>?
     private var settingsTask: Task<Void, Never>?
@@ -29,7 +31,7 @@ import Combine
     var canConfigure: Bool { state == .ready && countdown == nil }
     var isRecording: Bool { state == .recording }
     var busy: Bool { state == .takingPhoto || state == .finishing || state == .starting }
-    var preview: PreviewFeed? { engine?.processor.preview }
+    var preview: PreviewFeed? { dualCapture.isRecording ? dualCapture.preview : engine?.processor.preview }
     private var settingsURL: URL {
         FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("camera-settings.json")
     }
@@ -50,6 +52,7 @@ import Combine
             self.settings = actual
             if let engine = self.engine {
                 self.capabilities = NativeMovieController.augment(capabilities, engine: engine)
+                self.capabilities.spatialPhoto = self.capabilities.spatialPhoto && SpatialPhotoController.isSupported
                 var normalized = actual
                 if normalized.centerStage && !self.capabilities.centerStage { normalized.centerStage = false }
                 if normalized.smartFraming && !self.capabilities.smartFraming { normalized.smartFraming = false }
@@ -119,6 +122,7 @@ import Combine
     func suspend() {
         timerTask?.cancel(); countdown = nil; settingsTask?.cancel(); codeTask?.cancel(); detectedCode = nil; detectedText = []
         if nativeMovie.isRecording { nativeMovie.stop() }
+        if dualCapture.isRecording { dualCapture.stop() }
         if isRecording || state == .finishing || state == .takingPhoto {
             if backgroundTask == .invalid {
                 backgroundTask = UIApplication.shared.beginBackgroundTask(withName:"Finish camera capture") { [weak self] in DispatchQueue.main.async { self?.endBackgroundTask() } }
@@ -155,10 +159,16 @@ import Combine
 
     func selectMode(_ mode: CameraMode) {
         if mode == .slowMotion && capabilities.supportedSlowMotionFPS.isEmpty { notice = "This lens does not support high-frame-rate slow motion."; return }
+        if mode == .action && capabilities.supportedFPS.isEmpty { notice = "Action approximation is unavailable with this lens/format."; return }
         if mode == .cinematic && !capabilities.cinematic { notice = "Cinematic Video requires a supported iPhone, lens, and format on iOS 26+."; return }
         if mode == .portrait && !capabilities.depthData { notice = "Portrait depth capture is not supported by this lens/format."; return }
         if mode == .spatial && !capabilities.spatialVideo { notice = "Spatial Video is not available with this lens/format."; return }
-        change { $0.mode = mode; $0.torch = false }
+        if mode == .spatialPhoto && !capabilities.spatialPhoto { notice = "Spatial Photo needs a supported multi-camera iPhone."; return }
+        if mode == .dualCapture && !capabilities.multiCam { notice = "Dual Capture needs MultiCam support on this iPhone."; return }
+        change {
+            $0.mode = mode; $0.torch = false
+            if mode == .action { $0.fps = capabilities.supportedFPS.contains(60) ? 60 : (capabilities.supportedFPS.contains(30) ? 30 : ($0.fps)); $0.resolution = capabilities.supportedResolutions.contains(.fullHD) ? .fullHD : $0.resolution }
+        }
     }
 
     func selectLens(_ lens: LensOption) {
@@ -192,10 +202,14 @@ import Combine
 
     func shutter() {
         if countdown != nil { timerTask?.cancel(); countdown = nil; return }
+        if dualCapture.isRecording { state = .finishing; dualCapture.stop(); return }
         if nativeMovie.isRecording { state = .finishing; nativeMovie.stop(); return }
         if isRecording { engine?.stopRecording(); return }
         guard canConfigure else { return }
         settingsTask?.cancel(); engine?.update(settings)
+        if settings.mode == .panorama { engine?.startPanorama(); return }
+        if settings.mode == .dualCapture { startDualCapture(); return }
+        if settings.mode == .spatialPhoto { captureSpatialPhoto(); return }
         if settings.mode.isMovie {
             if settings.usesNativeMoviePipeline, let engine {
                 nativeMovie.start(engine: engine, settings: settings, stateChanged: { [weak self] recording in
@@ -217,6 +231,43 @@ import Combine
             }
             guard !Task.isCancelled else { return }
             countdown = nil; engine?.capturePhoto()
+        }
+    }
+
+    private func startDualCapture() {
+        guard let engine, let renderer else { return }
+        let snapshot=settings
+        state = .starting
+        engine.pauseForExternalCapture { [weak self] in
+            guard let self else { return }
+            let microphoneAllowed = snapshot.audio && AVCaptureDevice.authorizationStatus(for:.audio) == .authorized
+            self.dualCapture.start(renderer:renderer,settings:snapshot,microphoneAllowed:microphoneAllowed,stateChanged:{ [weak self] recording in
+                guard let self else { return }
+                self.state = recording ? .recording : .finishing
+                UIApplication.shared.isIdleTimerDisabled = recording
+            },completion:{ [weak self] result in
+                guard let self else { return }
+                self.handleMedia(result)
+                self.state = .stopped
+                UIApplication.shared.isIdleTimerDisabled = false
+                Task { await self.start() }
+            })
+        }
+    }
+
+    private func captureSpatialPhoto() {
+        guard let engine, let renderer else { return }
+        let snapshot=settings
+        state = .starting
+        engine.pauseForExternalCapture { [weak self] in
+            guard let self else { return }
+            self.state = .takingPhoto
+            self.spatialPhotoCapture.capture(renderer:renderer,settings:snapshot) { [weak self] result in
+                guard let self else { return }
+                self.handleMedia(result)
+                self.state = .stopped
+                Task { await self.start() }
+            }
         }
     }
 

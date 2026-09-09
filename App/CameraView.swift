@@ -9,6 +9,7 @@ struct CameraView: View {
             controls.padding(.horizontal,20).padding(.top,10).padding(.bottom,12)
         }
         .background(Color.black)
+        .modifier(CameraHardwareCaptureModifier(model:model))
         .sheet(isPresented:$model.showSettings) { CameraSettingsView(model:model) }
         .fullScreenCover(isPresented:$model.showLibrary,onDismiss:{ Task { await model.start() } }) { MediaLibraryView(library:model.library) }
         .alert("Camera",isPresented:Binding(get:{ model.error != nil },set:{ if !$0 { model.error = nil } })) {
@@ -213,7 +214,7 @@ struct CameraView: View {
             }.frame(maxWidth:.infinity).padding(.vertical,10)
                 .foregroundStyle(enabled ? .yellow:.white)
                 .background(enabled ? Color.yellow.opacity(0.13):Color.white.opacity(0.08),in:RoundedRectangle(cornerRadius:10))
-        }.disabled(!model.canConfigure || model.settings.usesNativeMoviePipeline || model.settings.mode == .portrait)
+        }.disabled(!model.canConfigure || model.settings.usesNativeMoviePipeline || model.settings.mode == .portrait || model.settings.mode.isStandaloneCaptureMode || model.settings.mode == .action)
             .accessibilityValue(enabled ? "On":"Off")
     }
     private func statusPill(_ text:String,icon:String) -> some View {
@@ -226,6 +227,8 @@ struct CameraView: View {
         case .cinematic: return !model.capabilities.cinematic
         case .portrait: return !model.capabilities.depthData
         case .spatial: return !model.capabilities.spatialVideo
+        case .spatialPhoto: return !model.capabilities.spatialPhoto
+        case .dualCapture: return !model.capabilities.multiCam
         default: return false
         }
     }
@@ -236,6 +239,17 @@ struct CameraView: View {
     }
     private func time(_ seconds:Double) -> String {
         let s = max(0,Int(seconds)); return String(format:"%02d:%02d:%02d",s/3600,(s%3600)/60,s%60)
+    }
+}
+
+private struct CameraHardwareCaptureModifier: ViewModifier {
+    @ObservedObject var model: CameraModel
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.onCameraCaptureEvent(isEnabled:model.state != .stopped && !model.showLibrary) { event in
+                if event.phase == .ended { model.shutter() }
+            }
+        } else { content }
     }
 }
 

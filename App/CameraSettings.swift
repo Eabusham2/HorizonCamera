@@ -2,11 +2,12 @@ import Foundation
 import AVFoundation
 
 public enum CameraMode: String, CaseIterable, Codable, Identifiable {
-    case timeLapse = "TIME-LAPSE", slowMotion = "SLO-MO", cinematic = "CINEMATIC", video = "VIDEO", photo = "PHOTO", portrait = "PORTRAIT", spatial = "SPATIAL"
+    case timeLapse = "TIME-LAPSE", slowMotion = "SLO-MO", action = "ACTION", cinematic = "CINEMATIC", video = "VIDEO", dualCapture = "DUAL", photo = "PHOTO", portrait = "PORTRAIT", panorama = "PANO", spatialPhoto = "SPATIAL PHOTO", spatial = "SPATIAL VIDEO"
     public var id: String { rawValue }
-    var isPhotoMode: Bool { self == .photo || self == .portrait }
+    var isPhotoMode: Bool { self == .photo || self == .portrait || self == .panorama || self == .spatialPhoto }
     var isMovie: Bool { !isPhotoMode }
     var isNativeMovieMode: Bool { self == .cinematic || self == .spatial }
+    var isStandaloneCaptureMode: Bool { self == .panorama || self == .spatialPhoto || self == .dualCapture }
 }
 
 enum Framing: String, CaseIterable, Codable, Identifiable {
@@ -39,6 +40,35 @@ enum CaptureFilter: String, CaseIterable, Codable, Identifiable {
     var id: String { rawValue }
 }
 
+enum PhotographicStyleApprox: String, CaseIterable, Codable, Identifiable {
+    case standard = "Standard", vibrant = "Vibrant", richContrast = "Rich Contrast", warm = "Warm", cool = "Cool", roseGold = "Rose Gold", muted = "Muted"
+    var id: String { rawValue }
+}
+
+enum ComputationalPhotoMode: String, CaseIterable, Codable, Identifiable {
+    case off = "Off", autoHDR = "Smart HDR-like", night = "Night-like", detailFusion = "Detail Fusion"
+    var id: String { rawValue }
+    var isBracketed: Bool { self != .off }
+    var exposureBiases: [Float] {
+        switch self {
+        case .off: return []
+        case .autoHDR: return [-2, 0, 2]
+        case .night: return [-0.7, -0.35, 0, 0.35, 0.7]
+        case .detailFusion: return [-0.35, 0, 0.35]
+        }
+    }
+}
+
+enum PortraitLightingApprox: String, CaseIterable, Codable, Identifiable {
+    case natural = "Natural", studio = "Studio", contour = "Contour", stage = "Stage", stageMono = "Stage Mono", highKeyMono = "High-Key Mono"
+    var id: String { rawValue }
+}
+
+enum DualCaptureLayout: String, CaseIterable, Codable, Identifiable {
+    case pictureInPicture = "Picture in Picture", splitVertical = "Split Vertical", splitHorizontal = "Split Horizontal"
+    var id: String { rawValue }
+}
+
 enum CodecChoice: String, CaseIterable, Codable, Identifiable {
     case efficient = "HEVC / HEIF", compatible = "H.264 / JPEG", proResLT = "Apple ProRes 422 LT", proRes422 = "Apple ProRes 422", proResHQ = "Apple ProRes 422 HQ"
     var id: String { rawValue }
@@ -55,9 +85,10 @@ enum CodecChoice: String, CaseIterable, Codable, Identifiable {
 }
 
 enum VideoColorProfile: String, CaseIterable, Codable, Identifiable {
-    case sdr = "SDR / Rec.709", hdrHLG = "HDR / HLG", appleLog = "Apple Log", appleLog2 = "Apple Log 2"
+    case sdr = "SDR / Rec.709", hdrHLG = "HDR / HLG", dolbyVision84 = "Dolby Vision 8.4 / HLG", appleLog = "Apple Log", appleLog2 = "Apple Log 2"
     var id: String { rawValue }
     var isLog: Bool { self == .appleLog || self == .appleLog2 }
+    var isHDR: Bool { self == .hdrHLG || self == .dolbyVision84 }
 }
 
 enum StabilizationChoice: String, CaseIterable, Codable, Identifiable {
@@ -121,6 +152,16 @@ struct CameraSettings: Codable, Equatable {
     var scanQRCodes = true
     var showDetectedText = true
     var mirrorSelfie = true
+    var photographicStyle: PhotographicStyleApprox = .standard
+    var styleIntensity = 1.0
+    var styleTone = 0.0
+    var styleWarmth = 0.0
+    var computationalPhoto: ComputationalPhotoMode = .off
+    var portraitLighting: PortraitLightingApprox = .natural
+    var portraitBlurRadius = 14.0
+    var actionStrength = 0.75
+    var panoramaFeather = 0.55
+    var dualCaptureLayout: DualCaptureLayout = .pictureInPicture
     var flash: FlashChoice = .off
     var torch = false
     var livePhoto = false
@@ -175,18 +216,66 @@ struct CameraSettings: Codable, Equatable {
     var motionOffsetMilliseconds = 0.0
 
     var framing: Framing { mode.isPhotoMode ? photoFraming : videoFraming }
-    var isProcessedPhoto: Bool { mode.isPhotoMode && (horizonLock || zoomLock || zoom > 1.001 || filter != .original || photoFraming != .classic) }
+    var hasCustomStyle: Bool { photographicStyle != .standard || abs(styleTone) > 0.001 || abs(styleWarmth) > 0.001 }
+    var isProcessedPhoto: Bool { mode.isPhotoMode && mode != .panorama && mode != .spatialPhoto && (mode == .portrait || horizonLock || zoomLock || zoom > 1.001 || filter != .original || photoFraming != .classic || hasCustomStyle || portraitLighting != .natural || computationalPhoto != .off) }
     var captureFPS: Int { mode == .slowMotion ? slowMotionFPS : fps }
     var outputSize: Size2 { framing.size(longEdge: mode == .slowMotion ? min(1920, resolution.longEdge) : resolution.longEdge) }
-    var reserve: Double { zoomLock ? 0.80 : (horizonLock ? 0.97 : 1) }
+    var reserve: Double { mode == .action ? max(0.58, 0.86 - actionStrength * 0.22) : (zoomLock ? 0.80 : (horizonLock ? 0.97 : 1)) }
     var usesNativeMoviePipeline: Bool { mode.isNativeMovieMode || codec.isProRes || colorProfile != .sdr || audioMode != .mono }
+    var usesBracketedPhotoPipeline: Bool { mode == .photo && computationalPhoto.isBracketed }
 
     mutating func normalize(changedFrom old: CameraSettings) {
         zoom = min(max(zoom, 1), 12)
+        styleIntensity = min(max(styleIntensity, 0), 1)
+        styleTone = min(max(styleTone, -1), 1)
+        styleWarmth = min(max(styleWarmth, -1), 1)
+        portraitBlurRadius = min(max(portraitBlurRadius, 0), 40)
+        actionStrength = min(max(actionStrength, 0), 1)
+        panoramaFeather = min(max(panoramaFeather, 0.1), 0.9)
         if mode.isPhotoMode {
             if codec.isProRes { codec = .efficient }
             colorProfile = .sdr
             audioMode = .mono
+        }
+        if mode == .action {
+            horizonLock = true
+            zoomLock = false
+            stabilization = .off
+            codec = .efficient
+            colorProfile = .sdr
+            photographicStyle = .standard
+            filter = .original
+        }
+        if mode == .panorama || mode == .spatialPhoto {
+            horizonLock = false
+            zoomLock = false
+            raw = false
+            livePhoto = false
+            constantColor = false
+            computationalPhoto = .off
+            filter = .original
+            photographicStyle = .standard
+            photoFraming = .classic
+        }
+        if mode == .dualCapture {
+            horizonLock = false
+            zoomLock = false
+            fps = 30
+            if resolution == .ultraHD { resolution = .fullHD }
+            codec = .efficient
+            colorProfile = .sdr
+            audioMode = .mono
+            photographicStyle = .standard
+            filter = .original
+        }
+        if computationalPhoto != .off {
+            raw = false
+            livePhoto = false
+            depthData = false
+            portraitEffectsMatte = false
+            semanticMattes = false
+            constantColor = false
+            flash = .off
         }
         if mode == .portrait {
             centerStage = false
@@ -227,6 +316,7 @@ struct CameraSettings: Codable, Equatable {
             audioMode = .mono
         }
         if colorProfile.isLog && !codec.isProRes { codec = .proRes422 }
+        if colorProfile == .dolbyVision84 { codec = .efficient }
         if mode.isNativeMovieMode || (mode.isMovie && usesNativeMoviePipeline) {
             if videoFraming == .square || videoFraming == .classic { videoFraming = .portrait }
             horizonLock = false
@@ -251,7 +341,7 @@ struct CameraSettings: Codable, Equatable {
         depthData != old.depthData || portraitEffectsMatte != old.portraitEffectsMatte || semanticMattes != old.semanticMattes ||
         constantColor != old.constantColor || contentAwareDistortionCorrection != old.contentAwareDistortionCorrection ||
         sensorOrientationCompensation != old.sensorOrientationCompensation || cameraCalibrationData != old.cameraCalibrationData ||
-        cinematicAperture != old.cinematicAperture
+        cinematicAperture != old.cinematicAperture || computationalPhoto != old.computationalPhoto || actionStrength != old.actionStrength
     }
 
     var cadence: RecordingCadence {
@@ -304,6 +394,10 @@ struct CameraCapabilities {
     var lensSmudgeDetection = false
     var qrScanning = false
     var liveText = true
+    var bracketedCapture = false
+    var maxBracketedCaptureCount = 0
+    var multiCam = false
+    var spatialPhoto = false
     var responsiveCapture = false
     var zeroShutterLag = false
     var fastCapturePrioritization = false
@@ -315,6 +409,7 @@ struct CameraCapabilities {
     var spatialVideo = false
     var proRes = false
     var hdrHLG = false
+    var dolbyVision = false
     var appleLog = false
     var appleLog2 = false
     var stereoAudio = false

@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import VideoToolbox
 
 final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegate {
     private weak var engine: CaptureEngine?
@@ -68,6 +69,7 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
         }
         let probe = AVCaptureMovieFileOutput()
         result.proRes = probe.availableVideoCodecTypes.contains(.proRes422) || probe.availableVideoCodecTypes.contains(.proRes422LT) || probe.availableVideoCodecTypes.contains(.proRes422HQ)
+        result.dolbyVision = result.hdrHLG && (probe.availableVideoCodecTypes.isEmpty || probe.availableVideoCodecTypes.contains(.hevc))
         if #available(iOS 26.0, *), let audioInput = engine.session.inputs.compactMap({ $0 as? AVCaptureDeviceInput }).first(where: { $0.ports.contains(where: { $0.mediaType == .audio }) }) {
             result.stereoAudio = audioInput.isMultichannelAudioModeSupported(.stereo)
             result.spatialAudio = audioInput.isMultichannelAudioModeSupported(.firstOrderAmbisonics)
@@ -104,14 +106,14 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                 let desiredColor: AVCaptureColorSpace
                 switch settings.colorProfile {
                 case .sdr: desiredColor = .sRGB
-                case .hdrHLG: desiredColor = .HLG_BT2020
+                case .hdrHLG, .dolbyVision84: desiredColor = .HLG_BT2020
                 case .appleLog: desiredColor = .appleLog
                 case .appleLog2:
                     if #available(iOS 26.0, *) { desiredColor = .appleLog2 } else { desiredColor = .appleLog }
                 }
                 if device.activeFormat.supportedColorSpaces.contains(desiredColor) { device.activeColorSpace = desiredColor }
                 device.automaticallyAdjustsVideoHDREnabled = false
-                if device.activeFormat.isVideoHDRSupported { device.isVideoHDREnabled = settings.colorProfile == .hdrHLG }
+                if device.activeFormat.isVideoHDRSupported { device.isVideoHDREnabled = settings.colorProfile.isHDR }
             } catch { }
             if device.activeFormat.isCenterStageSupported {
                 AVCaptureDevice.centerStageControlMode = .cooperative
@@ -218,8 +220,23 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                     let rotation: CGFloat = settings.videoFraming == .portrait ? 90 : 0
                     if connection.isVideoRotationAngleSupported(rotation) { connection.videoRotationAngle = rotation }
                     movie.setRecordsVideoOrientationAndMirroringChangesAsMetadataTrack(true, for: connection)
-                    if settings.mode != .spatial && movie.availableVideoCodecTypes.contains(settings.codec.avCodec) {
-                        movie.setOutputSettings([AVVideoCodecKey: settings.codec.avCodec], for: connection)
+                    if settings.mode != .spatial {
+                        if settings.colorProfile == .dolbyVision84, movie.availableVideoCodecTypes.contains(.hevc) {
+                            let supported=Set(movie.supportedOutputSettingsKeys(for:connection))
+                            var output:[String:Any]=[AVVideoCodecKey:AVVideoCodecType.hevc]
+                            if supported.contains(AVVideoProfileLevelKey) { output[AVVideoProfileLevelKey]=kVTProfileLevel_HEVC_Main10_AutoLevel }
+                            if supported.contains(AVVideoColorPropertiesKey) {
+                                output[AVVideoColorPropertiesKey]=[AVVideoColorPrimariesKey:AVVideoColorPrimaries_ITU_R_2020,
+                                    AVVideoTransferFunctionKey:AVVideoTransferFunction_ITU_R_2100_HLG,
+                                    AVVideoYCbCrMatrixKey:AVVideoYCbCrMatrix_ITU_R_2020]
+                            }
+                            if supported.contains(AVVideoCompressionPropertiesKey) {
+                                output[AVVideoCompressionPropertiesKey]=[kVTCompressionPropertyKey_HDRMetadataInsertionMode as String:kVTHDRMetadataInsertionMode_Auto]
+                            }
+                            movie.setOutputSettings(output,for:connection)
+                        } else if movie.availableVideoCodecTypes.contains(settings.codec.avCodec) {
+                            movie.setOutputSettings([AVVideoCodecKey: settings.codec.avCodec], for: connection)
+                        }
                     }
                 }
                 movie.metadata = Self.movieMetadata(settings)

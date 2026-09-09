@@ -48,6 +48,128 @@ final class ImageRenderer: @unchecked Sendable {
         case .cool: return image.applyingFilter("CITemperatureAndTint", parameters: ["inputNeutral": CIVector(x: 6500,y: 0), "inputTargetNeutral": CIVector(x: 5400,y: 0)])
         }
     }
+
+    func photographicStyle(_ image: CIImage, settings: CameraSettings) -> CIImage {
+        var styled = image
+        switch settings.photographicStyle {
+        case .standard: break
+        case .vibrant:
+            styled = styled.applyingFilter("CIVibrance", parameters:[kCIInputAmountKey:0.55])
+                .applyingFilter("CIColorControls", parameters:[kCIInputSaturationKey:1.08,kCIInputContrastKey:1.04])
+        case .richContrast:
+            styled = styled.applyingFilter("CIHighlightShadowAdjust", parameters:["inputHighlightAmount":0.72,"inputShadowAmount":-0.18])
+                .applyingFilter("CIColorControls", parameters:[kCIInputContrastKey:1.14,kCIInputSaturationKey:1.02])
+        case .warm:
+            styled = styled.applyingFilter("CITemperatureAndTint", parameters:["inputNeutral":CIVector(x:6500,y:0),"inputTargetNeutral":CIVector(x:7350,y:0)])
+        case .cool:
+            styled = styled.applyingFilter("CITemperatureAndTint", parameters:["inputNeutral":CIVector(x:6500,y:0),"inputTargetNeutral":CIVector(x:5650,y:0)])
+        case .roseGold:
+            styled = styled.applyingFilter("CIColorMatrix", parameters:[
+                "inputRVector":CIVector(x:1.05,y:0.02,z:0,w:0),
+                "inputGVector":CIVector(x:0.02,y:1.00,z:0.01,w:0),
+                "inputBVector":CIVector(x:0.03,y:0.01,z:0.94,w:0)])
+                .applyingFilter("CIVibrance", parameters:[kCIInputAmountKey:0.2])
+        case .muted:
+            styled = styled.applyingFilter("CIColorControls", parameters:[kCIInputSaturationKey:0.78,kCIInputContrastKey:0.96])
+                .applyingFilter("CIHighlightShadowAdjust", parameters:["inputHighlightAmount":0.9,"inputShadowAmount":0.15])
+        }
+        if abs(settings.styleTone) > 0.001 {
+            styled = styled.applyingFilter("CIExposureAdjust", parameters:[kCIInputEVKey: settings.styleTone * 0.45])
+                .applyingFilter("CIColorControls", parameters:[kCIInputContrastKey:1 + settings.styleTone * 0.06])
+        }
+        if abs(settings.styleWarmth) > 0.001 {
+            let kelvin = 6500 + settings.styleWarmth * 1400
+            styled = styled.applyingFilter("CITemperatureAndTint", parameters:["inputNeutral":CIVector(x:6500,y:0),"inputTargetNeutral":CIVector(x:kelvin,y:0)])
+        }
+        let amount = min(max(settings.styleIntensity,0),1)
+        if amount >= 0.999 { return styled }
+        if amount <= 0.001 { return image }
+        return image.applyingFilter("CIDissolveTransition", parameters:[kCIInputTargetImageKey:styled,kCIInputTimeKey:amount])
+    }
+
+    func applyLook(_ image: CIImage, settings: CameraSettings) -> CIImage {
+        filter(photographicStyle(image, settings:settings), settings.filter)
+    }
+
+    func fuseBracket(_ images: [CIImage], mode: ComputationalPhotoMode) -> CIImage? {
+        guard !images.isEmpty else { return nil }
+        let biases = mode.exposureBiases
+        let extent = images.dropFirst().reduce(images[0].extent) { $0.intersection($1.extent) }
+        guard !extent.isNull, extent.width > 1, extent.height > 1 else { return nil }
+        var normalized: [CIImage] = []
+        for (index,image) in images.enumerated() {
+            var frame = image.cropped(to:extent)
+            if index < biases.count, abs(biases[index]) > 0.001 {
+                frame = frame.applyingFilter("CIExposureAdjust", parameters:[kCIInputEVKey:-biases[index]])
+            }
+            normalized.append(frame)
+        }
+        var combined = normalized[0]
+        for frame in normalized.dropFirst() {
+            combined = frame.applyingFilter("CIAdditionCompositing", parameters:[kCIInputBackgroundImageKey:combined])
+        }
+        let scale = CGFloat(1.0 / Double(normalized.count))
+        combined = combined.applyingFilter("CIColorMatrix", parameters:[
+            "inputRVector":CIVector(x:scale,y:0,z:0,w:0),
+            "inputGVector":CIVector(x:0,y:scale,z:0,w:0),
+            "inputBVector":CIVector(x:0,y:0,z:scale,w:0),
+            "inputAVector":CIVector(x:0,y:0,z:0,w:1)])
+        switch mode {
+        case .off: return combined
+        case .autoHDR:
+            return combined.applyingFilter("CIHighlightShadowAdjust", parameters:["inputHighlightAmount":0.62,"inputShadowAmount":0.32])
+                .applyingFilter("CIUnsharpMask", parameters:[kCIInputRadiusKey:2.2,kCIInputIntensityKey:0.22])
+        case .night:
+            return combined.applyingFilter("CINoiseReduction", parameters:["inputNoiseLevel":0.035,"inputSharpness":0.42])
+                .applyingFilter("CIHighlightShadowAdjust", parameters:["inputHighlightAmount":0.72,"inputShadowAmount":0.48])
+                .applyingFilter("CIExposureAdjust", parameters:[kCIInputEVKey:0.28])
+        case .detailFusion:
+            return combined.applyingFilter("CINoiseReduction", parameters:["inputNoiseLevel":0.018,"inputSharpness":0.55])
+                .applyingFilter("CISharpenLuminance", parameters:[kCIInputSharpnessKey:0.42])
+                .applyingFilter("CIUnsharpMask", parameters:[kCIInputRadiusKey:1.6,kCIInputIntensityKey:0.20])
+        }
+    }
+
+    func portraitLighting(_ image: CIImage, matte: CIImage?, style: PortraitLightingApprox, blurRadius: Double) -> CIImage {
+        guard let matte else { return style == .natural ? image : photographicFallback(image,style:style) }
+        let sx = image.extent.width / max(1,matte.extent.width), sy = image.extent.height / max(1,matte.extent.height)
+        var mask = matte.transformed(by:CGAffineTransform(scaleX:sx,y:sy))
+        mask = mask.transformed(by:CGAffineTransform(translationX:image.extent.minX-mask.extent.minX,y:image.extent.minY-mask.extent.minY))
+            .cropped(to:image.extent)
+            .applyingFilter("CIGaussianBlur",parameters:[kCIInputRadiusKey:1.4]).cropped(to:image.extent)
+        let blurred = image.clampedToExtent().applyingFilter("CIGaussianBlur",parameters:[kCIInputRadiusKey:max(0,blurRadius)]).cropped(to:image.extent)
+        let black = CIImage(color:.black).cropped(to:image.extent)
+        let white = CIImage(color:.white).cropped(to:image.extent)
+        let subject: CIImage
+        let background: CIImage
+        switch style {
+        case .natural:
+            subject = image; background = blurred
+        case .studio:
+            subject = image.applyingFilter("CIColorControls",parameters:[kCIInputBrightnessKey:0.08,kCIInputContrastKey:0.96,kCIInputSaturationKey:1.02]); background = blurred
+        case .contour:
+            subject = image.applyingFilter("CIColorControls",parameters:[kCIInputContrastKey:1.24,kCIInputSaturationKey:0.95])
+                .applyingFilter("CIVignette",parameters:[kCIInputIntensityKey:0.35,kCIInputRadiusKey:1.2]); background = blurred
+        case .stage:
+            subject = image.applyingFilter("CIColorControls",parameters:[kCIInputBrightnessKey:0.04,kCIInputContrastKey:1.10]); background = black
+        case .stageMono:
+            subject = image.applyingFilter("CIPhotoEffectNoir"); background = black
+        case .highKeyMono:
+            subject = image.applyingFilter("CIPhotoEffectMono").applyingFilter("CIExposureAdjust",parameters:[kCIInputEVKey:0.25]); background = white
+        }
+        return subject.applyingFilter("CIBlendWithMask",parameters:[kCIInputBackgroundImageKey:background,kCIInputMaskImageKey:mask])
+    }
+
+    private func photographicFallback(_ image: CIImage, style: PortraitLightingApprox) -> CIImage {
+        switch style {
+        case .natural: return image
+        case .studio: return image.applyingFilter("CIColorControls",parameters:[kCIInputBrightnessKey:0.08,kCIInputContrastKey:0.98])
+        case .contour: return image.applyingFilter("CIColorControls",parameters:[kCIInputContrastKey:1.22])
+        case .stage: return image.applyingFilter("CIVignetteEffect",parameters:[kCIInputIntensityKey:0.85,kCIInputRadiusKey:0.7])
+        case .stageMono: return image.applyingFilter("CIPhotoEffectNoir").applyingFilter("CIVignetteEffect",parameters:[kCIInputIntensityKey:0.9,kCIInputRadiusKey:0.7])
+        case .highKeyMono: return image.applyingFilter("CIPhotoEffectMono").applyingFilter("CIExposureAdjust",parameters:[kCIInputEVKey:0.35])
+        }
+    }
     func render(_ image: CIImage, into buffer: CVPixelBuffer) {
         context.render(image, to: buffer, bounds: image.extent, colorSpace: colorSpace)
     }
@@ -73,6 +195,8 @@ final class FrameProcessor {
     private var zoomAnchor: (target: Point2, anchor: Point2)?
     private var renderedZoom = 1.0
     private var zoomTimestamp: Double?
+    private var actionOffset = Point2(0,0)
+    private var actionTimestamp: Double?
     private var pendingTarget: Point2?
     private(set) var lastPlan: CropPlan?
     private var frozenAngle: Double?
@@ -84,7 +208,7 @@ final class FrameProcessor {
     init(motion: MotionService, renderer: ImageRenderer) { self.motion = motion; self.renderer = renderer }
     func resetGeometry() {
         horizon.reset(); tracker.reset(); manualCenter = Point2(0.5, 0.5)
-        zoomAnchor = nil; zoomTimestamp = nil; pendingTarget = nil; lastPlan = nil; lastAngle = 0
+        zoomAnchor = nil; zoomTimestamp = nil; actionOffset = Point2(0,0); actionTimestamp = nil; pendingTarget = nil; lastPlan = nil; lastAngle = 0
         renderedZoom = settings.zoom
         preview.publish(nil); fpsCount = 0; fpsStart = 0; planHistory.removeAll(); frozenAngle = nil
     }
@@ -129,6 +253,16 @@ final class FrameProcessor {
         } else {
             diagnostics.motionStatus = motion.available ? "Motion stale — holding angle" : "Motion unavailable"
         }
+        if settings.mode == .action, let reading {
+            let dt = min(0.05,max(0,hostTime-(actionTimestamp ?? hostTime)))
+            let gain = 0.10 + 0.22 * settings.actionStrength
+            let decay = pow(0.12,dt)
+            actionOffset = Point2(actionOffset.x*decay - reading.rateY*dt*gain,
+                                  actionOffset.y*decay + reading.rateX*dt*gain)
+            actionOffset.x = CropGeometry.clamp(actionOffset.x,-0.16,0.16)
+            actionOffset.y = CropGeometry.clamp(actionOffset.y,-0.16,0.16)
+            actionTimestamp = hostTime
+        } else { actionOffset = Point2(0,0); actionTimestamp = hostTime }
         let angle: Double
         if settings.horizonLock {
             angle = lastAngle + settings.horizonTrimDegrees * .pi/180
@@ -162,7 +296,7 @@ final class FrameProcessor {
             pendingTarget = nil
         }
         if settings.zoomLock { tracker.update(image: source, time: hostTime) }
-        var desired = Point2(manualCenter.x*size.width, manualCenter.y*size.height)
+        var desired = Point2((manualCenter.x + actionOffset.x)*size.width, (manualCenter.y + actionOffset.y)*size.height)
         if settings.zoomLock, let target = tracker.target {
             desired = plan.centerHolding(target: Point2(target.x*size.width, target.y*size.height), at: tracker.anchor)
         }
@@ -172,7 +306,7 @@ final class FrameProcessor {
         lastPlan = plan
         planHistory.append((hostTime,plan))
         if planHistory.count > 600 { planHistory.removeFirst(planHistory.count-600) }
-        let output = renderer.filter(renderer.transform(source, plan: plan), settings.filter)
+        let output = renderer.applyLook(renderer.transform(source, plan: plan), settings:settings)
         let target = settings.zoomLock ? tracker.box.map { box -> Point2 in
             let p = plan.sourceToOutput(Point2(box.midX*size.width, box.midY*size.height))
             return Point2(p.x/plan.output.width, p.y/plan.output.height)
@@ -213,6 +347,6 @@ final class FrameProcessor {
         let p = try CropGeometry.plan(source:size, output:out, angle:angle,zoom:live.zoom,
             fullTurn:settings.horizonLock,reserve:settings.reserve,
             requestedCenter:Point2(live.center.x/live.source.width*size.width,live.center.y/live.source.height*size.height))
-        return renderer.filter(renderer.transform(image,plan:p),settings.filter)
+        return renderer.applyLook(renderer.transform(image,plan:p),settings:settings)
     }
 }

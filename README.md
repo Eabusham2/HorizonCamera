@@ -33,14 +33,16 @@ HorizonCamera does **not** claim to clone Apple's proprietary image-processing a
 | Apple Camera area | HorizonCamera status |
 |---|---|
 | Photo | ✅ Native maximum-quality still capture plus optional custom Horizon/Zoom/filter processing |
-| Portrait | ✅ **Depth-capable Portrait mode**: requests depth and Portrait Effects matte data and embeds supported auxiliary data; does **not** claim Apple's proprietary Portrait Lighting/bokeh renderer |
+| Portrait | ✅ Depth-capable Portrait mode plus **Portrait Lighting approximations** (Natural / Studio / Contour / Stage / Stage Mono / High-Key Mono) driven by the real Portrait Effects matte when available; exact Apple relighting/bokeh is not claimed |
 | Video | ✅ Custom stabilized/video-processing path or native AVFoundation path when advanced native features require it |
+| Action | ✅ **Action approximation**: Horizon Lock plus stronger reserved crop and timestamp-aligned three-axis gyro compensation; not Apple's private Action-mode algorithm |
+| Dual Capture | ✅ Separate `AVCaptureMultiCamSession` records simultaneous front + rear cameras with PIP / vertical split / horizontal split layouts |
 | Time-lapse | ✅ Frame-sampled time-lapse with configurable interval |
 | Slo-mo | ✅ 120 fps and 240 fps when the active iPhone/lens exposes them, retimed for 30 fps playback |
 | Cinematic | ✅ Capability-gated public **iOS 26+ Cinematic capture** path, required Cinematic metadata track, and simulated aperture control |
 | Spatial | ✅ Capability-gated **Spatial Video** capture through `AVCaptureMovieFileOutput` on supported devices/formats |
-| Panorama | ❌ No first-party AVFoundation “make a stock Pano” API; HorizonCamera does not ship a fake panorama button |
-| Spatial Photo | ⚠️ Stock Camera can create spatial photos on supported devices, but HorizonCamera currently exposes the public Spatial **Video** path only |
+| Panorama | ✅ **PANO approximation**: motion/yaw-guided overlapping live-camera frames with FOV-based placement and feathered ImageIO/Core Image stitching |
+| Spatial Photo | ✅ Capability-gated stereo HEIC approximation: two simultaneous physical rear-camera streams, factory relative camera extrinsics, matched FOV, stereo-pair group metadata and camera intrinsics/extrinsics |
 
 ### Photo capture features
 
@@ -69,6 +71,9 @@ HorizonCamera does **not** claim to clone Apple's proprietary image-processing a
 | Flash | ✅ Off / Auto / On |
 | 3 s / 10 s timer | ✅ |
 | 3:4 / 1:1 / 9:16 / 16:9 framing | ✅ Custom photo path; native Portrait is constrained to compatible framing |
+| Smart HDR-like / Night-like / Detail Fusion | ✅ **Approximation** using real AVFoundation exposure brackets, optional OIS during bracket capture, exposure normalization, fusion/noise reduction/highlight-shadow/detail processing |
+| Photographic Styles | ✅ **Approximation** with Standard / Vibrant / Rich Contrast / Warm / Cool / Rose Gold / Muted plus intensity, tone and warmth controls; not Apple's private rendering recipes |
+| Portrait Lighting | ✅ **Approximation** using the delivered Portrait Effects matte for subject/background compositing and relighting-style rendering |
 
 AVFoundation requires long pipeline reconfiguration for depth and semantic mattes, so HorizonCamera configures those at the output/session level rather than setting a cosmetic per-shot flag.
 
@@ -87,13 +92,16 @@ AVFoundation requires long pipeline reconfiguration for depth and semantic matte
 | Apple ProRes 422 HQ | ✅ Native movie path when available |
 | SDR / Rec.709 | ✅ Custom writer renders in Rec.709 and tags output consistently |
 | HDR / HLG | ✅ Capability-gated native color-space/HDR path |
+| Dolby Vision 8.4 / HLG | ✅ Capability-gated native profile requests HEVC Main10 + Rec.2020 HLG and automatic HDR metadata insertion when the output supports those settings; physical-device bitstream/playback validation still applies |
 | Apple Log | ✅ Capability-gated; Log selection forces a compatible ProRes/native path |
 | Apple Log 2 | ✅ iOS 26+ when the active format reports it |
 | Native video stabilization | ✅ Off / Standard / Cinematic / Cinematic Extended plus iOS 18/26 modes when the format reports support |
+| Action stabilization | ✅ **Approximation** adds gyro-derived translational crop compensation and Horizon Lock on top of increased stabilization headroom |
+| Dual Capture | ✅ Simultaneous front/rear MultiCam composite recorded through the same tested movie writer |
 | Orientation/mirroring metadata track | ✅ Native movie output records changes; portrait/landscape rotation is explicitly configured |
 | Native movie digital zoom | ✅ Ramps the **physical capture device**, so saved Cinematic/Spatial/ProRes footage matches the native preview zoom instead of applying a preview-only crop |
 
-**HDR / HLG is not described as Dolby Vision.** Apple's Camera app's exact Dolby Vision processing/look is not reproduced.
+**Dolby Vision note:** HorizonCamera now has a separate Dolby Vision 8.4 / HLG-compatible public-API path. It requests HEVC Main10, Rec.2020 HLG and automatic HDR metadata insertion where supported. It still does **not** claim Apple's private Camera tone mapping, ISP decisions, or identical stock-Camera look.
 
 ### Focus, exposure and white balance
 
@@ -146,26 +154,25 @@ Location metadata is **off by default**. If you enable it, HorizonCamera request
 - Physical lens selection and camera flip.
 - Controls remain portrait-oriented while the camera image may roll for Horizon Lock.
 - Settings persist between launches.
+- Active-app **Camera Control / hardware capture events** on iOS 18+ trigger the current HorizonCamera shutter/record action through SwiftUI capture events.
 
-## What is intentionally *not* presented as Apple parity
+## Approximation boundary — what is still not Apple-identical
 
-These stock-Camera behaviors either use proprietary/system processing, require a separate specialized pipeline/extension, or do not have a direct public API equivalent. HorizonCamera keeps them visibly absent rather than putting in nonfunctional buttons:
+HorizonCamera now implements close public-API approximations for several stock-Camera features that do not have a public “use Apple's exact algorithm” API. The approximation is real and affects saved output; the **Apple-identical** behavior below is still not claimed:
 
-- Apple's exact **Night mode / multi-frame fusion** and Night Portrait processing.
-- **Photographic Styles** and Apple's current stock rendering/tone-mapping recipes.
-- Stock **Scene Detection** look decisions.
-- Apple's exact **Portrait Lighting**, automatic portrait relighting and stock depth-rendering look.
-- Stock **Panorama** stitching UI/algorithm.
-- Apple's exact **Action mode** stabilization algorithm. HorizonCamera exposes the stabilization modes the active AVFoundation format publicly reports instead.
-- The stock Camera app's exact **Dolby Vision HDR** pipeline/look; HorizonCamera exposes public HLG HDR where available.
-- Apple's exact stock **Macro Control** UI/trigger thresholds. The Auto virtual camera can perform public AVFoundation constituent switching based on zoom/light/focus conditions, and physical ultrawide selection remains available, but HorizonCamera does not claim Apple's private Camera-app macro heuristics.
-- **Camera Control** hardware gestures/system overlay behavior.
-- Apple's lock-screen Camera replacement / system Camera entitlement behavior.
-- Stock Spatial **Photo** authoring; Spatial Video is implemented through public AVFoundation APIs.
-- iPhone 17 **Dual Capture** is not yet in this single-session capture architecture; public `AVCaptureMultiCamSession` requires a separate simultaneous front/back session and writer rather than a safe toggle.
-- Full system **Live Text** actions (translation, phone/address/currency actions) remain system UI; HorizonCamera performs on-device text recognition/copy plus QR actions.
+- **Night / Smart HDR / detail fusion:** HorizonCamera captures real exposure brackets and fuses them, but it cannot reproduce Apple's private ISP/Neural Engine frame selection, semantic tone mapping, Deep Fusion or exact Night Portrait pipeline.
+- **Photographic Styles / Scene Detection:** HorizonCamera provides tunable style recipes and live/saved rendering, but not Apple's proprietary current-generation style engine or automatic scene decisions.
+- **Portrait Lighting:** the app uses actual Portrait Effects mattes for relighting-style output, but Apple's exact depth refinement, hair/edge segmentation, relighting and bokeh renderer remain private.
+- **Panorama:** PANO performs a real motion-guided feather stitch, but it is not Apple's stock stitcher, exposure optimizer, sweep UI or private geometric correction.
+- **Action mode:** the app uses reserved crop, Horizon Lock and timestamp-aligned three-axis gyro crop compensation. Apple's exact EIS/ISP motion model remains private.
+- **Dolby Vision:** the public path can request a Dolby Vision 8.4 / HLG-compatible HEVC Main10 stream with automatic HDR metadata insertion; Apple's exact Camera HDR tone mapping/look remains private and physical-device validation is required.
+- **Spatial Photo:** the app produces a two-image stereo HEIC with factory relative rear-camera extrinsics and spatial metadata, but captures from synchronized camera streams rather than Apple's stock still-fusion pipeline.
+- **Dual Capture:** the app really records simultaneous front + rear MultiCam streams and composites them; Apple's iPhone 17 stock UI/heuristics are not cloned.
+- **Camera Control:** active-app hardware capture events are handled. A lock-screen replacement / `LockedCameraCapture` system extension is a separate entitlement/extension architecture and is not claimed here.
+- **Macro Control:** the public virtual camera can switch constituents and physical ultrawide remains selectable, but Apple's private stock Camera macro trigger thresholds/UI are not reproduced.
+- **Live Text:** on-device text recognition/copy and QR actions are implemented; the complete system translation/address/phone/currency action surface remains system UI.
 
-This distinction is deliberate: “supported” in the UI means a real capture API/code path exists and the current device reports capability.
+This distinction is deliberate: **implemented** means a real code/capture path exists and affects output; **approximation** means HorizonCamera implements the closest public-API behavior without claiming Apple-private algorithms or identical image quality.
 
 ## Storage and privacy
 
