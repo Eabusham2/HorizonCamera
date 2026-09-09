@@ -349,7 +349,10 @@ final class PipelineTests: XCTestCase {
 
     func testSpatialPhotoEncoderCreatesTwoImageStereoHEIC() throws {
         guard #available(iOS 18.0,*) else { throw XCTSkip("Spatial ImageIO metadata requires iOS 18") }
-        let renderer=try makeRenderer(), leftCI=pattern(width:320,height:180), rightCI=pattern(width:320,height:180).transformed(by:CGAffineTransform(translationX:2,y:0)).cropped(to:CGRect(x:0,y:0,width:320,height:180))
+        let renderer=try makeRenderer(), leftCI=pattern(width:320,height:180)
+        let eyeBounds=CGRect(x:0,y:0,width:320,height:180)
+        let shifted=pattern(width:320,height:180).transformed(by:CGAffineTransform(translationX:2,y:0))
+        let rightCI=shifted.composited(over:CIImage(color:.black).cropped(to:eyeBounds)).cropped(to:eyeBounds)
         let left=try XCTUnwrap(renderer.context.createCGImage(leftCI,from:leftCI.extent,format:.RGBA8,colorSpace:renderer.colorSpace))
         let right=try XCTUnwrap(renderer.context.createCGImage(rightCI,from:rightCI.extent,format:.RGBA8,colorSpace:renderer.colorSpace))
         let data=try SpatialPhotoEncoder.encode(left:left,right:right,commonFOV:70,rightPosition:[0.025,0,0],rightRotation:[1,0,0,0,1,0,0,0,1],settings:CameraSettings())
