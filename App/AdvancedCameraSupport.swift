@@ -19,7 +19,7 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
         let format = device.activeFormat
         result.supportedResolutions = [.hd, .fullHD] + (base.supports4K ? [.ultraHD] : [])
         let fpsCandidates = [24, 25, 30, 50, 60, 120]
-        result.supportedFPS = fpsCandidates.filter { fps in format.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= Double(fps) && $0.maxFrameRate >= Double(fps) } }
+        result.supportedFPS = fpsCandidates.filter { fps in device.formats.contains { f in f.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= Double(fps) && $0.maxFrameRate >= Double(fps) } } }
         result.supportedSlowMotionFPS = [120, 240].filter { fps in device.formats.contains { f in f.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= Double(fps) } } }
         if #available(iOS 18.0, *) { result.autoFPS = format.isAutoVideoFrameRateSupported }
         result.smoothAutofocus = device.isSmoothAutoFocusSupported
@@ -50,11 +50,11 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
             result.depthData = photo.isDepthDataDeliverySupported
             result.portraitEffectsMatte = photo.isPortraitEffectsMatteDeliverySupported
             result.semanticMattes = !photo.availableSemanticSegmentationMatteTypes.isEmpty
-            result.constantColor = photo.isConstantColorSupported
+            if #available(iOS 18.0, *) { result.constantColor = photo.isConstantColorSupported }
             result.autoRedEyeReduction = photo.isAutoRedEyeReductionSupported
             result.contentAwareDistortionCorrection = photo.isContentAwareDistortionCorrectionSupported
             result.virtualDeviceFusion = photo.isVirtualDeviceFusionSupported
-            result.sensorOrientationCompensation = photo.isCameraSensorOrientationCompensationSupported
+            if #available(iOS 26.0, *) { result.sensorOrientationCompensation = photo.isCameraSensorOrientationCompensationSupported }
             result.cameraCalibrationData = photo.isCameraCalibrationDataDeliverySupported
         }
         let probe = AVCaptureMovieFileOutput()
@@ -90,6 +90,8 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                     if #available(iOS 26.0, *) { desiredColor = .appleLog2 } else { desiredColor = .appleLog }
                 }
                 if device.activeFormat.supportedColorSpaces.contains(desiredColor) { device.activeColorSpace = desiredColor }
+                device.automaticallyAdjustsVideoHDREnabled = false
+                if device.activeFormat.isVideoHDRSupported { device.isVideoHDREnabled = settings.colorProfile == .hdrHLG }
             } catch { }
             if let photo = engine.session.outputs.compactMap({ $0 as? AVCapturePhotoOutput }).first {
                 engine.session.beginConfiguration()
@@ -100,8 +102,8 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                 if photo.isDepthDataDeliverySupported { photo.isDepthDataDeliveryEnabled = settings.depthData }
                 if photo.isPortraitEffectsMatteDeliverySupported { photo.isPortraitEffectsMatteDeliveryEnabled = settings.portraitEffectsMatte && settings.depthData }
                 photo.enabledSemanticSegmentationMatteTypes = settings.semanticMattes ? photo.availableSemanticSegmentationMatteTypes : []
-                if photo.isConstantColorSupported { photo.isConstantColorEnabled = settings.constantColor }
-                if photo.isCameraSensorOrientationCompensationSupported { photo.isCameraSensorOrientationCompensationEnabled = settings.sensorOrientationCompensation && !settings.raw }
+                if #available(iOS 18.0, *), photo.isConstantColorSupported { photo.isConstantColorEnabled = settings.constantColor }
+                if #available(iOS 26.0, *), photo.isCameraSensorOrientationCompensationSupported { photo.isCameraSensorOrientationCompensationEnabled = settings.sensorOrientationCompensation && !settings.raw }
                 if photo.isContentAwareDistortionCorrectionSupported { photo.isContentAwareDistortionCorrectionEnabled = settings.contentAwareDistortionCorrection && !settings.cameraCalibrationData }
                 if photo.isAppleProRAWSupported { photo.isAppleProRAWEnabled = settings.raw && settings.preferProRAW }
                 photo.maxPhotoQualityPrioritization = settings.photoQuality.avValue
@@ -164,6 +166,8 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
 
                 if let connection = movie.connection(with: .video) {
                     if connection.isVideoStabilizationSupported { connection.preferredVideoStabilizationMode = settings.stabilization.avMode }
+                    let rotation: CGFloat = settings.videoFraming == .portrait ? 90 : 0
+                    if connection.isVideoRotationAngleSupported(rotation) { connection.videoRotationAngle = rotation }
                     movie.setRecordsVideoOrientationAndMirroringChangesAsMetadataTrack(true, for: connection)
                     if settings.mode != .spatial && movie.availableVideoCodecTypes.contains(settings.codec.avCodec) {
                         movie.setOutputSettings([AVVideoCodecKey: settings.codec.avCodec], for: connection)

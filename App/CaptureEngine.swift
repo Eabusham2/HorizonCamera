@@ -151,8 +151,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
         let previousDeviceID = videoInput?.device.uniqueID
         let fps = settings.captureFPS
-        let targetWidth = settings.mode == .slowMotion ? 1920 :
-            ((settings.horizonLock || settings.zoomLock || settings.resolution == .ultraHD) ? 3840 : 1920)
+        let targetWidth = settings.mode.isPhotoMode ? 1920 : settings.resolution.longEdge
         func maxPhotoArea(_ format: AVCaptureDevice.Format) -> Int64 {
             format.supportedMaxPhotoDimensions.map { Int64($0.width)*Int64($0.height) }.max() ?? 0
         }
@@ -240,8 +239,8 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             if photoOutput.isDepthDataDeliverySupported { photoOutput.isDepthDataDeliveryEnabled = settings.depthData && !settings.raw }
             if photoOutput.isPortraitEffectsMatteDeliverySupported { photoOutput.isPortraitEffectsMatteDeliveryEnabled = settings.portraitEffectsMatte && settings.depthData && !settings.raw }
             photoOutput.enabledSemanticSegmentationMatteTypes = settings.semanticMattes && !settings.raw ? photoOutput.availableSemanticSegmentationMatteTypes : []
-            if photoOutput.isConstantColorSupported { photoOutput.isConstantColorEnabled = settings.constantColor && !settings.raw }
-            if photoOutput.isCameraSensorOrientationCompensationSupported { photoOutput.isCameraSensorOrientationCompensationEnabled = settings.sensorOrientationCompensation && !settings.raw }
+            if #available(iOS 18.0, *), photoOutput.isConstantColorSupported { photoOutput.isConstantColorEnabled = settings.constantColor && !settings.raw }
+            if #available(iOS 26.0, *), photoOutput.isCameraSensorOrientationCompensationSupported { photoOutput.isCameraSensorOrientationCompensationEnabled = settings.sensorOrientationCompensation && !settings.raw }
             if photoOutput.isContentAwareDistortionCorrectionSupported { photoOutput.isContentAwareDistortionCorrectionEnabled = settings.contentAwareDistortionCorrection && !settings.cameraCalibrationData }
             photoOutput.isLivePhotoCaptureEnabled = photoOutput.isLivePhotoCaptureSupported &&
                 settings.mode.isPhotoMode && settings.livePhoto && !settings.raw && !settings.isProcessedPhoto
@@ -314,8 +313,20 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
     }
     func setZoom(_ zoom: Double, anchor: Point2? = nil) {
-        sessionQueue.async { [self] in configuration.zoom = min(max(zoom,1),12) }
-        frameQueue.async { [self] in processor.setZoom(zoom,atUIKit:anchor) }
+        let value = min(max(zoom,1),12)
+        sessionQueue.async { [self] in
+            configuration.zoom = value
+            let native = configuration.usesNativeMoviePipeline
+            if native, let device = videoInput?.device {
+                do {
+                    try device.lockForConfiguration(); defer { device.unlockForConfiguration() }
+                    let factor = min(max(CGFloat(value), device.minAvailableVideoZoomFactor), device.maxAvailableVideoZoomFactor)
+                    if device.isRampingVideoZoom { device.cancelVideoZoomRamp() }
+                    device.ramp(toVideoZoomFactor: factor, withRate: 8)
+                } catch { report(error.localizedDescription) }
+            }
+            frameQueue.async { [self] in processor.setZoom(native ? 1 : value, atUIKit: native ? nil : anchor) }
+        }
     }
     func tap(_ point: Point2) {
         frameQueue.async { [self] in
@@ -412,8 +423,10 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 settings.embedsPortraitEffectsMatteInPhoto = settings.isPortraitEffectsMatteDeliveryEnabled
                 settings.enabledSemanticSegmentationMatteTypes = config.semanticMattes && !config.raw ? photoOutput.enabledSemanticSegmentationMatteTypes : []
                 settings.embedsSemanticSegmentationMattesInPhoto = !settings.enabledSemanticSegmentationMatteTypes.isEmpty
-                settings.isConstantColorEnabled = config.constantColor && photoOutput.isConstantColorEnabled && !config.raw
-                settings.isConstantColorFallbackPhotoDeliveryEnabled = settings.isConstantColorEnabled && config.constantColorFallback
+                if #available(iOS 18.0, *) {
+                    settings.isConstantColorEnabled = config.constantColor && photoOutput.isConstantColorEnabled && !config.raw
+                    settings.isConstantColorFallbackPhotoDeliveryEnabled = settings.isConstantColorEnabled && config.constantColorFallback
+                }
                 if device.hasFlash { settings.flashMode = config.flash.avMode }
                 var liveURL: URL?
                 if config.livePhoto && !config.raw && !config.isProcessedPhoto && photoOutput.isLivePhotoCaptureEnabled {
@@ -447,11 +460,9 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         if packet.settings.isProcessedPhoto {
             guard let image = CIImage(data:data,options:[.applyOrientationProperty:true]) else { throw CameraFailure.message("Cannot decode this still image.") }
             let processed = try processor.processPhoto(image,hostTime:hostTime(for:packet.timestamp))
-            if packet.settings.codec == .efficient,
-               let encoded = renderer.context.heifRepresentation(of:processed,format:.RGBA8,colorSpace:renderer.colorSpace,options:[:]) {
-                data = encoded; suffix = "heic"
-            } else if let encoded = renderer.context.jpegRepresentation(of:processed,colorSpace:renderer.colorSpace,options:[:]) {
-                data = encoded; suffix = "jpg"
+            if let encoded = CaptureMetadata.encodeProcessed(processed, renderer: renderer,
+                efficient: packet.settings.codec == .efficient, settings: packet.settings) {
+                data = encoded.0; suffix = encoded.1
             } else { throw CameraFailure.message("Cannot encode the stabilized photo.") }
         }
         let url = try MediaFiles.newURL(extension:suffix)

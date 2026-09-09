@@ -217,6 +217,7 @@ struct CameraSettings: Codable, Equatable {
         }
         if colorProfile.isLog && !codec.isProRes { codec = .proRes422 }
         if mode.isNativeMovieMode || (mode.isMovie && usesNativeMoviePipeline) {
+            if videoFraming == .square || videoFraming == .classic { videoFraming = .portrait }
             horizonLock = false
             zoomLock = false
             filter = .original

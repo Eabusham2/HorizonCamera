@@ -1,5 +1,7 @@
 import Foundation
 import ImageIO
+import CoreImage
+import UniformTypeIdentifiers
 
 enum CaptureMetadata {
     static func photo(_ settings: CameraSettings) -> [String: Any] {
@@ -18,5 +20,15 @@ enum CaptureMetadata {
         var metadata: [String: Any] = [kCGImagePropertyTIFFDictionary as String: tiff]
         if !iptc.isEmpty { metadata[kCGImagePropertyIPTCDictionary as String] = iptc }
         return metadata
+    }
+
+    static func encodeProcessed(_ image: CIImage, renderer: ImageRenderer, efficient: Bool, settings: CameraSettings) -> (Data, String)? {
+        guard let cg = renderer.context.createCGImage(image, from: image.extent, format: .RGBA8, colorSpace: renderer.colorSpace) else { return nil }
+        let data = NSMutableData()
+        let type = efficient ? UTType.heic.identifier : UTType.jpeg.identifier
+        guard let destination = CGImageDestinationCreateWithData(data, type as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, cg, photo(settings) as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return (data as Data, efficient ? "heic" : "jpg")
     }
 }
