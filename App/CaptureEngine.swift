@@ -162,7 +162,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 f.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= Double(fps) && $0.maxFrameRate >= Double(fps) }
         }
         let sorted = eligible.sorted { a,b in
-            if settings.mode == .photo {
+            if settings.mode.isPhotoMode {
                 let ap = maxPhotoArea(a), bp = maxPhotoArea(b)
                 if ap != bp { return ap > bp }
             }
@@ -174,7 +174,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
         guard let format = sorted.first else { throw CameraFailure.message("This lens does not support \(fps) fps. Choose another lens or a lower frame rate.") }
         let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-        if settings.mode != .photo && settings.resolution == .ultraHD && settings.mode != .slowMotion && dimensions.width < 3840 {
+        if !settings.mode.isPhotoMode && settings.resolution == .ultraHD && settings.mode != .slowMotion && dimensions.width < 3840 {
             throw CameraFailure.message("4K at this frame rate is not supported by this lens.")
         }
         let input = try AVCaptureDeviceInput(device: device)
@@ -237,9 +237,15 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                     connection.preferredVideoStabilizationMode = settings.horizonLock || settings.zoomLock ? .off : .standard
                 }
             }
+            if photoOutput.isDepthDataDeliverySupported { photoOutput.isDepthDataDeliveryEnabled = settings.depthData && !settings.raw }
+            if photoOutput.isPortraitEffectsMatteDeliverySupported { photoOutput.isPortraitEffectsMatteDeliveryEnabled = settings.portraitEffectsMatte && settings.depthData && !settings.raw }
+            photoOutput.enabledSemanticSegmentationMatteTypes = settings.semanticMattes && !settings.raw ? photoOutput.availableSemanticSegmentationMatteTypes : []
+            if photoOutput.isConstantColorSupported { photoOutput.isConstantColorEnabled = settings.constantColor && !settings.raw }
+            if photoOutput.isCameraSensorOrientationCompensationSupported { photoOutput.isCameraSensorOrientationCompensationEnabled = settings.sensorOrientationCompensation && !settings.raw }
+            if photoOutput.isContentAwareDistortionCorrectionSupported { photoOutput.isContentAwareDistortionCorrectionEnabled = settings.contentAwareDistortionCorrection && !settings.cameraCalibrationData }
             photoOutput.isLivePhotoCaptureEnabled = photoOutput.isLivePhotoCaptureSupported &&
-                settings.mode == .photo && settings.livePhoto && !settings.raw && !settings.isProcessedPhoto
-            if photoOutput.isAppleProRAWSupported { photoOutput.isAppleProRAWEnabled = settings.raw && !settings.livePhoto && !settings.isProcessedPhoto }
+                settings.mode.isPhotoMode && settings.livePhoto && !settings.raw && !settings.isProcessedPhoto
+            if photoOutput.isAppleProRAWSupported { photoOutput.isAppleProRAWEnabled = settings.raw && settings.preferProRAW && !settings.livePhoto && !settings.isProcessedPhoto }
             session.commitConfiguration()
         } catch { session.commitConfiguration(); throw error }
         try applyControls(settings, device: device)
@@ -269,7 +275,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         capabilities.supports4K = device.formats.contains { CMVideoFormatDescriptionGetDimensions($0.formatDescription).width >= 3840 }
         capabilities.supports60 = device.formats.contains { $0.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= 60 } }
         capabilities.supports120 = device.formats.contains { $0.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= 120 } }
-        if settings.mode == .photo, let still = format.supportedMaxPhotoDimensions.max(by: { Int64($0.width)*Int64($0.height) < Int64($1.width)*Int64($1.height) }) {
+        if settings.mode.isPhotoMode, let still = format.supportedMaxPhotoDimensions.max(by: { Int64($0.width)*Int64($0.height) < Int64($1.width)*Int64($1.height) }) {
             capabilities.sourceDescription = "\(dimensions.width)×\(dimensions.height) preview · still up to \(still.width)×\(still.height)"
         } else {
             capabilities.sourceDescription = "\(dimensions.width)×\(dimensions.height) sensor stream · \(fps) fps"
@@ -303,7 +309,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             device.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
         } else if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) { device.whiteBalanceMode = .continuousAutoWhiteBalance }
         if device.hasTorch {
-            if settings.torch && settings.mode != .photo { try device.setTorchModeOn(level: 0.7) }
+            if settings.torch && !settings.mode.isPhotoMode { try device.setTorchModeOn(level: 0.7) }
             else { device.torchMode = .off }
         }
     }
@@ -384,15 +390,35 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 let config = configuration
                 let codec: AVVideoCodecType = config.codec == .efficient && photoOutput.availablePhotoCodecTypes.contains(.hevc) ? .hevc : .jpeg
                 let settings: AVCapturePhotoSettings
-                if config.raw && !config.livePhoto && !config.isProcessedPhoto, let raw = photoOutput.availableRawPhotoPixelFormatTypes.first {
-                    settings = AVCapturePhotoSettings(rawPixelFormatType:raw,processedFormat:[AVVideoCodecKey:codec])
+                if config.raw && !config.livePhoto && !config.isProcessedPhoto {
+                    let types = photoOutput.availableRawPhotoPixelFormatTypes
+                    let selected: OSType? = config.preferProRAW
+                        ? (types.first(where: { AVCapturePhotoOutput.isAppleProRAWPixelFormat($0) }) ?? types.first)
+                        : (types.first(where: { !AVCapturePhotoOutput.isAppleProRAWPixelFormat($0) }) ?? types.first)
+                    if let raw = selected { settings = AVCapturePhotoSettings(rawPixelFormatType:raw,processedFormat:[AVVideoCodecKey:codec]) }
+                    else { settings = AVCapturePhotoSettings(format:[AVVideoCodecKey:codec]) }
                 } else { settings = AVCapturePhotoSettings(format:[AVVideoCodecKey:codec]) }
-                settings.photoQualityPrioritization = .quality
+                settings.photoQualityPrioritization = config.photoQuality.avValue
                 settings.maxPhotoDimensions = photoOutput.maxPhotoDimensions
+                settings.metadata = CaptureMetadata.photo(config)
+                settings.isAutoRedEyeReductionEnabled = config.autoRedEyeReduction && photoOutput.isAutoRedEyeReductionSupported
+                settings.isAutoContentAwareDistortionCorrectionEnabled = config.contentAwareDistortionCorrection && photoOutput.isContentAwareDistortionCorrectionEnabled
+                settings.isAutoVirtualDeviceFusionEnabled = config.virtualDeviceFusion && photoOutput.isVirtualDeviceFusionSupported
+                settings.isCameraCalibrationDataDeliveryEnabled = config.cameraCalibrationData && photoOutput.isCameraCalibrationDataDeliverySupported
+                settings.isDepthDataDeliveryEnabled = config.depthData && photoOutput.isDepthDataDeliveryEnabled && !config.raw
+                settings.embedsDepthDataInPhoto = settings.isDepthDataDeliveryEnabled
+                settings.isDepthDataFiltered = config.depthDataFiltered
+                settings.isPortraitEffectsMatteDeliveryEnabled = config.portraitEffectsMatte && photoOutput.isPortraitEffectsMatteDeliveryEnabled && !config.raw
+                settings.embedsPortraitEffectsMatteInPhoto = settings.isPortraitEffectsMatteDeliveryEnabled
+                settings.enabledSemanticSegmentationMatteTypes = config.semanticMattes && !config.raw ? photoOutput.enabledSemanticSegmentationMatteTypes : []
+                settings.embedsSemanticSegmentationMattesInPhoto = !settings.enabledSemanticSegmentationMatteTypes.isEmpty
+                settings.isConstantColorEnabled = config.constantColor && photoOutput.isConstantColorEnabled && !config.raw
+                settings.isConstantColorFallbackPhotoDeliveryEnabled = settings.isConstantColorEnabled && config.constantColorFallback
                 if device.hasFlash { settings.flashMode = config.flash.avMode }
                 var liveURL: URL?
                 if config.livePhoto && !config.raw && !config.isProcessedPhoto && photoOutput.isLivePhotoCaptureEnabled {
                     liveURL = try MediaFiles.newURL(extension:"mov"); settings.livePhotoMovieFileURL = liveURL
+                    settings.livePhotoMovieMetadata = NativeMovieController.movieMetadata(config)
                 }
                 let id = settings.uniqueID
                 let delegate = PhotoCapture(id:id,settings:config,liveURL:liveURL) { [weak self] result in
@@ -435,8 +461,16 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             rawURL = try MediaFiles.newURL(extension:"dng")
             try raw.write(to:rawURL!,options:.atomic)
         }
+        var features: [String] = []
+        if packet.hasDepthData { features.append("depth") }
+        if packet.hasPortraitEffectsMatte { features.append("portrait matte") }
+        if packet.settings.semanticMattes { features.append("semantic mattes") }
+        if packet.hasCalibrationData { features.append("calibration") }
+        if packet.settings.constantColor { features.append("Constant Color") }
+        if packet.rawData != nil { features.append(packet.settings.preferProRAW ? "Apple ProRAW" : "RAW") }
+        let suffixSummary = features.isEmpty ? "" : " · " + features.joined(separator: ", ")
         return MediaDraft(url:url,liveMovie:packet.liveMovie,raw:rawURL,
-            summary:packet.settings.isProcessedPhoto ? "Processed photo · same lock/crop as preview" : "Native maximum-quality photo")
+            summary:(packet.settings.isProcessedPhoto ? "Processed photo · same lock/crop as preview" : "Native maximum-quality photo") + suffixSummary)
     }
     private func hostTime(for pts: CMTime) -> Double {
         guard pts.isValid && !pts.isIndefinite else { return CMClockGetTime(CMClockGetHostTimeClock()).seconds }

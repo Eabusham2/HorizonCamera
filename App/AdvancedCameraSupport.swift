@@ -24,6 +24,16 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
         if #available(iOS 18.0, *) { result.autoFPS = format.isAutoVideoFrameRateSupported }
         result.smoothAutofocus = device.isSmoothAutoFocusSupported
         result.focusRangeRestriction = device.isAutoFocusRangeRestrictionSupported
+        result.faceDrivenAutofocus = device.isFocusModeSupported(.continuousAutoFocus)
+        var stabilizationModes: [StabilizationChoice] = [.off]
+        for choice in [StabilizationChoice.standard, .cinematic, .extended] where format.isVideoStabilizationModeSupported(choice.avMode) { stabilizationModes.append(choice) }
+        if format.isVideoStabilizationModeSupported(.auto) { stabilizationModes.append(.auto) }
+        if #available(iOS 18.0, *), format.isVideoStabilizationModeSupported(.cinematicExtendedEnhanced) { stabilizationModes.append(.enhanced) }
+        if #available(iOS 26.0, *) {
+            if format.isVideoStabilizationModeSupported(.previewOptimized) { stabilizationModes.append(.previewOptimized) }
+            if format.isVideoStabilizationModeSupported(.lowLatency) { stabilizationModes.append(.lowLatency) }
+        }
+        result.supportedStabilizationModes = stabilizationModes
         result.hdrHLG = format.supportedColorSpaces.contains(.HLG_BT2020)
         result.appleLog = format.supportedColorSpaces.contains(.appleLog)
         if #available(iOS 26.0, *) {
@@ -36,6 +46,16 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
             result.zeroShutterLag = photo.isZeroShutterLagSupported
             result.fastCapturePrioritization = photo.isFastCapturePrioritizationSupported
             result.autoDeferredPhotoDelivery = photo.isAutoDeferredPhotoDeliverySupported
+            result.proRAW = photo.isAppleProRAWSupported
+            result.depthData = photo.isDepthDataDeliverySupported
+            result.portraitEffectsMatte = photo.isPortraitEffectsMatteDeliverySupported
+            result.semanticMattes = !photo.availableSemanticSegmentationMatteTypes.isEmpty
+            result.constantColor = photo.isConstantColorSupported
+            result.autoRedEyeReduction = photo.isAutoRedEyeReductionSupported
+            result.contentAwareDistortionCorrection = photo.isContentAwareDistortionCorrectionSupported
+            result.virtualDeviceFusion = photo.isVirtualDeviceFusionSupported
+            result.sensorOrientationCompensation = photo.isCameraSensorOrientationCompensationSupported
+            result.cameraCalibrationData = photo.isCameraCalibrationDataDeliverySupported
         }
         let probe = AVCaptureMovieFileOutput()
         result.proRes = probe.availableVideoCodecTypes.contains(.proRes422) || probe.availableVideoCodecTypes.contains(.proRes422LT) || probe.availableVideoCodecTypes.contains(.proRes422HQ)
@@ -55,6 +75,10 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                 try device.lockForConfiguration()
                 defer { device.unlockForConfiguration() }
                 if device.isSmoothAutoFocusSupported { device.isSmoothAutoFocusEnabled = settings.smoothAutofocus }
+                if device.isFocusModeSupported(.continuousAutoFocus) {
+                    device.automaticallyAdjustsFaceDrivenAutoFocusEnabled = false
+                    device.isFaceDrivenAutoFocusEnabled = settings.faceDrivenAutofocus
+                }
                 if device.isAutoFocusRangeRestrictionSupported { device.autoFocusRangeRestriction = settings.focusRange.avValue }
                 if #available(iOS 18.0, *), device.activeFormat.isAutoVideoFrameRateSupported { device.isAutoVideoFrameRateEnabled = settings.autoFPS }
                 let desiredColor: AVCaptureColorSpace
@@ -68,11 +92,20 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                 if device.activeFormat.supportedColorSpaces.contains(desiredColor) { device.activeColorSpace = desiredColor }
             } catch { }
             if let photo = engine.session.outputs.compactMap({ $0 as? AVCapturePhotoOutput }).first {
+                engine.session.beginConfiguration()
                 if photo.isResponsiveCaptureSupported { photo.isResponsiveCaptureEnabled = settings.responsiveCapture }
                 if photo.isZeroShutterLagSupported { photo.isZeroShutterLagEnabled = settings.zeroShutterLag }
                 if photo.isFastCapturePrioritizationSupported { photo.isFastCapturePrioritizationEnabled = settings.fastCapturePrioritization }
                 if photo.isAutoDeferredPhotoDeliverySupported { photo.isAutoDeferredPhotoDeliveryEnabled = settings.autoDeferredPhotoDelivery }
+                if photo.isDepthDataDeliverySupported { photo.isDepthDataDeliveryEnabled = settings.depthData }
+                if photo.isPortraitEffectsMatteDeliverySupported { photo.isPortraitEffectsMatteDeliveryEnabled = settings.portraitEffectsMatte && settings.depthData }
+                photo.enabledSemanticSegmentationMatteTypes = settings.semanticMattes ? photo.availableSemanticSegmentationMatteTypes : []
+                if photo.isConstantColorSupported { photo.isConstantColorEnabled = settings.constantColor }
+                if photo.isCameraSensorOrientationCompensationSupported { photo.isCameraSensorOrientationCompensationEnabled = settings.sensorOrientationCompensation && !settings.raw }
+                if photo.isContentAwareDistortionCorrectionSupported { photo.isContentAwareDistortionCorrectionEnabled = settings.contentAwareDistortionCorrection && !settings.cameraCalibrationData }
+                if photo.isAppleProRAWSupported { photo.isAppleProRAWEnabled = settings.raw && settings.preferProRAW }
                 photo.maxPhotoQualityPrioritization = settings.photoQuality.avValue
+                engine.session.commitConfiguration()
             }
             for connection in engine.session.outputs.compactMap({ $0.connection(with: .video) }) where connection.isVideoStabilizationSupported {
                 connection.preferredVideoStabilizationMode = settings.horizonLock || settings.zoomLock ? .off : settings.stabilization.avMode
@@ -170,7 +203,7 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
         }
     }
 
-    private static func movieMetadata(_ settings: CameraSettings) -> [AVMetadataItem] {
+    static func movieMetadata(_ settings: CameraSettings) -> [AVMetadataItem] {
         var items: [AVMetadataItem] = []
         func append(_ id: AVMetadataIdentifier, _ value: String) {
             guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -179,9 +212,11 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
             item.value = value as NSString
             items.append(item)
         }
+        append(.quickTimeMetadataTitle, settings.metadataTitle)
         append(.quickTimeMetadataAuthor, settings.metadataAuthor)
         append(.quickTimeMetadataCopyright, settings.metadataCopyright)
         append(.quickTimeMetadataDescription, settings.metadataDescription)
+        append(.quickTimeMetadataKeywords, settings.metadataKeywords)
         let software = AVMutableMetadataItem()
         software.identifier = .quickTimeMetadataSoftware
         software.value = "HorizonCamera" as NSString

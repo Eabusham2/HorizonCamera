@@ -2,9 +2,10 @@ import Foundation
 import AVFoundation
 
 public enum CameraMode: String, CaseIterable, Codable, Identifiable {
-    case timeLapse = "TIME-LAPSE", slowMotion = "SLO-MO", cinematic = "CINEMATIC", video = "VIDEO", photo = "PHOTO", spatial = "SPATIAL"
+    case timeLapse = "TIME-LAPSE", slowMotion = "SLO-MO", cinematic = "CINEMATIC", video = "VIDEO", photo = "PHOTO", portrait = "PORTRAIT", spatial = "SPATIAL"
     public var id: String { rawValue }
-    var isMovie: Bool { self != .photo }
+    var isPhotoMode: Bool { self == .photo || self == .portrait }
+    var isMovie: Bool { !isPhotoMode }
     var isNativeMovieMode: Bool { self == .cinematic || self == .spatial }
 }
 
@@ -118,6 +119,18 @@ struct CameraSettings: Codable, Equatable {
     var torch = false
     var livePhoto = false
     var raw = false
+    var preferProRAW = true
+    var depthData = false
+    var depthDataFiltered = true
+    var portraitEffectsMatte = false
+    var semanticMattes = false
+    var constantColor = false
+    var constantColorFallback = true
+    var autoRedEyeReduction = true
+    var contentAwareDistortionCorrection = true
+    var virtualDeviceFusion = true
+    var sensorOrientationCompensation = true
+    var cameraCalibrationData = false
     var timer = 0
     var filter: CaptureFilter = .original
     var codec: CodecChoice = .efficient
@@ -145,14 +158,16 @@ struct CameraSettings: Codable, Equatable {
     var autoDeferredPhotoDelivery = true
     var photoQuality: PhotoQualityChoice = .quality
     var cinematicAperture: Float = 4.0
+    var metadataTitle = ""
     var metadataAuthor = ""
     var metadataCopyright = ""
     var metadataDescription = ""
+    var metadataKeywords = ""
     var horizonTrimDegrees = 0.0
     var motionOffsetMilliseconds = 0.0
 
-    var framing: Framing { mode == .photo ? photoFraming : videoFraming }
-    var isProcessedPhoto: Bool { mode == .photo && (horizonLock || zoomLock || zoom > 1.001 || filter != .original || photoFraming != .classic) }
+    var framing: Framing { mode.isPhotoMode ? photoFraming : videoFraming }
+    var isProcessedPhoto: Bool { mode.isPhotoMode && (horizonLock || zoomLock || zoom > 1.001 || filter != .original || photoFraming != .classic) }
     var captureFPS: Int { mode == .slowMotion ? slowMotionFPS : fps }
     var outputSize: Size2 { framing.size(longEdge: mode == .slowMotion ? min(1920, resolution.longEdge) : resolution.longEdge) }
     var reserve: Double { zoomLock ? 0.80 : (horizonLock ? 0.97 : 1) }
@@ -160,11 +175,35 @@ struct CameraSettings: Codable, Equatable {
 
     mutating func normalize(changedFrom old: CameraSettings) {
         zoom = min(max(zoom, 1), 12)
-        if mode == .photo {
+        if mode.isPhotoMode {
             if codec.isProRes { codec = .efficient }
             colorProfile = .sdr
             audioMode = .mono
         }
+        if mode == .portrait {
+            depthData = true
+            portraitEffectsMatte = true
+            horizonLock = false
+            zoomLock = false
+            filter = .original
+            raw = false
+            livePhoto = false
+            photoFraming = .classic
+        }
+        if constantColor {
+            raw = false
+            livePhoto = false
+            if flash == .off { flash = .auto }
+        }
+        if raw {
+            depthData = false
+            portraitEffectsMatte = false
+            semanticMattes = false
+            constantColor = false
+            cameraCalibrationData = false
+        }
+        if !depthData { portraitEffectsMatte = false }
+        if !raw { preferProRAW = true }
         if mode == .slowMotion {
             slowMotionFPS = slowMotionFPS >= 240 ? 240 : 120
             codec = .efficient
@@ -196,7 +235,11 @@ struct CameraSettings: Codable, Equatable {
         mirrorSelfie != old.mirrorSelfie || isProcessedPhoto != old.isProcessedPhoto || stabilization != old.stabilization ||
         codec != old.codec || colorProfile != old.colorProfile || audioMode != old.audioMode || windNoiseRemoval != old.windNoiseRemoval ||
         responsiveCapture != old.responsiveCapture || zeroShutterLag != old.zeroShutterLag || fastCapturePrioritization != old.fastCapturePrioritization ||
-        autoDeferredPhotoDelivery != old.autoDeferredPhotoDelivery || photoQuality != old.photoQuality || cinematicAperture != old.cinematicAperture
+        autoDeferredPhotoDelivery != old.autoDeferredPhotoDelivery || photoQuality != old.photoQuality ||
+        depthData != old.depthData || portraitEffectsMatte != old.portraitEffectsMatte || semanticMattes != old.semanticMattes ||
+        constantColor != old.constantColor || contentAwareDistortionCorrection != old.contentAwareDistortionCorrection ||
+        sensorOrientationCompensation != old.sensorOrientationCompensation || cameraCalibrationData != old.cameraCalibrationData ||
+        cinematicAperture != old.cinematicAperture
     }
 
     var cadence: RecordingCadence {
@@ -222,6 +265,16 @@ struct CameraCapabilities {
     var torch = false
     var livePhoto = false
     var raw = false
+    var proRAW = false
+    var depthData = false
+    var portraitEffectsMatte = false
+    var semanticMattes = false
+    var constantColor = false
+    var autoRedEyeReduction = false
+    var contentAwareDistortionCorrection = false
+    var virtualDeviceFusion = false
+    var sensorOrientationCompensation = false
+    var cameraCalibrationData = false
     var manualFocus = false
     var maxISO: Float = 1600
     var minISO: Float = 25
@@ -236,6 +289,7 @@ struct CameraCapabilities {
     var fastCapturePrioritization = false
     var autoDeferredPhotoDelivery = false
     var smoothAutofocus = false
+    var faceDrivenAutofocus = false
     var focusRangeRestriction = false
     var cinematic = false
     var spatialVideo = false
@@ -246,6 +300,7 @@ struct CameraCapabilities {
     var stereoAudio = false
     var spatialAudio = false
     var windNoiseRemoval = false
+    var supportedStabilizationModes: [StabilizationChoice] = [.off]
     var sourceDescription = "Starting camera…"
     var supports4K = false
     var supports60 = false

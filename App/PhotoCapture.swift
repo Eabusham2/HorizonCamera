@@ -7,6 +7,9 @@ struct PhotoPacket {
     let liveMovie: URL?
     let timestamp: CMTime
     let settings: CameraSettings
+    let hasDepthData: Bool
+    let hasPortraitEffectsMatte: Bool
+    let hasCalibrationData: Bool
 }
 final class PhotoCapture: NSObject, AVCapturePhotoCaptureDelegate {
     let id: Int64
@@ -17,6 +20,9 @@ final class PhotoCapture: NSObject, AVCapturePhotoCaptureDelegate {
     private var imageData: Data?
     private var rawData: Data?
     private var timestamp: CMTime = .invalid
+    private var hasDepthData = false
+    private var hasPortraitEffectsMatte = false
+    private var hasCalibrationData = false
     private var error: Error?
     init(id: Int64, settings: CameraSettings, liveURL: URL?, completion: @escaping (Result<PhotoPacket, Error>) -> Void) {
         self.id = id; self.settings = settings; self.liveURL = liveURL; self.completion = completion
@@ -27,7 +33,12 @@ final class PhotoCapture: NSObject, AVCapturePhotoCaptureDelegate {
         guard let data = photo.fileDataRepresentation() else {
             self.error = CameraFailure.message("The camera returned an empty photo."); return
         }
-        if photo.isRawPhoto { rawData = data } else { imageData = data; timestamp = photo.timestamp }
+        if photo.isRawPhoto { rawData = data } else {
+            imageData = data; timestamp = photo.timestamp
+            hasDepthData = photo.depthData != nil
+            hasPortraitEffectsMatte = photo.portraitEffectsMatte != nil
+            hasCalibrationData = photo.cameraCalibrationData != nil
+        }
     }
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingLivePhotoToMovieFileAt outputFileURL: URL,
                      duration: CMTime, photoDisplayTime: CMTime, resolvedSettings: AVCaptureResolvedPhotoSettings, error: Error?) {
@@ -37,10 +48,12 @@ final class PhotoCapture: NSObject, AVCapturePhotoCaptureDelegate {
         lock.lock()
         let failure = error ?? self.error
         let data = imageData, raw = rawData, time = timestamp
+        let depth = hasDepthData, matte = hasPortraitEffectsMatte, calibration = hasCalibrationData
         lock.unlock()
         if let failure { completion(.failure(failure)) }
         else if let data {
-            completion(.success(PhotoPacket(data: data, rawData: raw, liveMovie: liveURL, timestamp: time, settings: settings)))
+            completion(.success(PhotoPacket(data: data, rawData: raw, liveMovie: liveURL, timestamp: time, settings: settings,
+                hasDepthData: depth, hasPortraitEffectsMatte: matte, hasCalibrationData: calibration)))
         } else { completion(.failure(CameraFailure.message("The photo did not finish processing."))) }
     }
 }
