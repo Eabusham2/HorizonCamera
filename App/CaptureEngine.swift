@@ -548,7 +548,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
         if #available(iOS 26.0, *), configuration.smartFraming && now-lastSmartFramingTime >= 0.35 {
             lastSmartFramingTime = now
-            AdvancedCameraSupport.applySmartFramingIfNeeded(configuration,engine:self)
+            NativeMovieController.applySmartFramingIfNeeded(configuration,engine:self)
         }
         autoreleasepool {
             do {
