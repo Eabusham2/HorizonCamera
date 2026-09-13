@@ -42,22 +42,8 @@ struct CameraSettingsView: View {
             Toggle("Lens cleaning hints",isOn:model.binding(\.lensCleaningHints))
                 .disabled(!model.capabilities.lensSmudgeDetection)
             if model.settings.mode.isMovie {
-                Picker("Native stabilization",selection:model.binding(\.stabilization)) {
-                    ForEach(StabilizationChoice.allCases) { choice in
-                        Text(choice.rawValue).tag(choice)
-                            .disabled(!model.capabilities.supportedStabilizationModes.contains(choice))
-                    }
-                }
-                .disabled(model.settings.horizonLock || model.settings.zoomLock || model.settings.actionStabilization)
-                Toggle("Lock Camera while recording",isOn:model.binding(\.lockCameraSwitching))
-                    .disabled(!model.capabilities.lockCameraSwitching)
-                Toggle("Auto FPS in low light",isOn:model.binding(\.autoFPS))
-                    .disabled(!model.capabilities.autoFPS || model.settings.fps > 60)
-                if model.settings.actionStabilization {
-                    Toggle("Native Action assist",isOn:model.binding(\.actionNativeAssist))
-                    Text("Action assist prefers a low-latency public stabilization mode when the active format supports it. The custom SDR correction remains output-only.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+                Text("Native stabilization is controlled from the main camera strip. Exposure compensation and AE/AF Lock are available in the camera controls tray.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -201,7 +187,9 @@ struct CameraSettingsView: View {
     }
 
     private var focusExposureSection: some View {
-        Section("Focus and exposure") {
+        Section("Advanced focus and exposure") {
+            Text("Basic exposure compensation and AE/AF Lock live on the camera screen. These are the advanced/manual controls.")
+                .font(.caption).foregroundStyle(.secondary)
             LabeledContent("Exposure compensation", value:String(format:"%+.1f EV",model.settings.exposureEV))
             Slider(value:model.binding(\.exposureEV), in:model.capabilities.minEV...max(model.capabilities.minEV+0.1,model.capabilities.maxEV), step:0.1)
                 .disabled(model.settings.manualExposure || model.settings.aeafLock)
@@ -249,9 +237,10 @@ struct CameraSettingsView: View {
             Toggle("Level indicator", isOn:model.binding(\.showLevel))
             Toggle("Mirror front camera", isOn:model.binding(\.mirrorSelfie))
             Toggle("Mini full-lens overview", isOn:model.binding(\.showOverview))
+            Toggle("Statistics overlay", isOn:model.binding(\.showStats))
             if model.capabilities.qrScanning { Toggle("Scan QR codes", isOn:model.binding(\.scanQRCodes)) }
             if model.capabilities.liveText { Toggle("Live Text detection",isOn:model.binding(\.showDetectedText)) }
-            Text("Live Text detects quietly; the text panel only opens after you tap the Live Text button. Mini overview is off by default and shows the full active lens with the actual output crop in yellow. Grid is off by default. Persistent settings are remembered; live zoom resets to 1× each launch.")
+            Text("Live Text appears automatically when text is detected; tap the chip to expand/copy it. Mini overview is on by default. Statistics and Grid are off by default. Persistent settings are remembered; live zoom resets to 1× each launch.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -281,7 +270,7 @@ struct CameraSettingsView: View {
                 TextField("Keywords, comma separated",text:model.binding(\.metadataKeywords))
             }
             Toggle("Location metadata",isOn:model.binding(\.includeLocationMetadata))
-            Text("Custom metadata is off by default. With it off, HorizonCamera preserves camera/AVFoundation metadata instead of injecting title/author/software fields. Location is also off until explicitly enabled.")
+            Text("Custom title/author metadata is off by default. Location metadata is on by default and can be disabled here; HorizonCamera otherwise preserves camera/AVFoundation metadata.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -289,7 +278,7 @@ struct CameraSettingsView: View {
     private var savingSection: some View {
         Section("Saving") {
             Toggle("Also save to Photos", isOn:model.binding(\.saveToPhotos))
-            Text("Captures are retained in HorizonCamera's local library first. Photos permission is add-only; the app does not read your existing library or upload captures.")
+            Text("Captures are retained in HorizonCamera's local library first. Camera-library permission is requested at startup so Photos access is ready when you use library features; captures are never uploaded by HorizonCamera.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

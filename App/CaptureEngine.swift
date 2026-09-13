@@ -20,6 +20,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private let textDetector = LiveTextDetector()
     private let textQueue = DispatchQueue(label:"camera.live-text",qos:.utility)
     private var videoInput: AVCaptureDeviceInput?
+    private var inputCache: [String:AVCaptureDeviceInput] = [:]
     private var audioInput: AVCaptureDeviceInput?
     private var devices: [AVCaptureDevice] = []
     private var configuration = CameraSettings()
@@ -246,7 +247,9 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         if !settings.mode.isPhotoMode && !Self.format(format,meets:settings.resolution) {
             throw CameraFailure.message("\(settings.resolution.rawValue) at this frame rate is not supported by this lens.")
         }
-        let input = try AVCaptureDeviceInput(device: device)
+        let input: AVCaptureDeviceInput
+        if let cached=inputCache[device.uniqueID] { input=cached }
+        else { let created=try AVCaptureDeviceInput(device:device); inputCache[device.uniqueID]=created; input=created }
         session.beginConfiguration()
         do {
             session.sessionPreset = .inputPriority
@@ -330,7 +333,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             configuration.actionStabilization != settings.actionStabilization || previousDeviceID != device.uniqueID
         configuration = settings
         frameQueue.sync { [self] in
-            if changedSource { processor.resetGeometry() }
+            if changedSource { processor.resetGeometry(keepPreview: previousDeviceID != nil && previousDeviceID != device.uniqueID) }
             processor.configure(settings, front: device.position == .front, horizontalFOVDegrees: Double(device.activeFormat.videoFieldOfView))
         }
         var capabilities = CameraCapabilities()

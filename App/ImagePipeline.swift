@@ -212,17 +212,17 @@ final class FrameProcessor {
     private var fps = 0.0
     var dropped = 0
     init(motion: MotionService, renderer: ImageRenderer) { self.motion = motion; self.renderer = renderer }
-    func resetGeometry() {
+    func resetGeometry(keepPreview: Bool = false) {
         horizon.reset(); tracker.reset(); manualCenter = Point2(0.5, 0.5)
         zoomAnchor = nil; zoomTimestamp = nil; actionOffset = Point2(0,0); actionTimestamp = nil; frameLockOffset = Point2(0,0); frameLockTimestamp = nil; pendingTarget = nil; lastPlan = nil; lastAngle = 0
         renderedZoom = settings.zoom
-        preview.publish(nil); fpsCount = 0; fpsStart = 0; planHistory.removeAll(); frozenAngle = nil
+        if !keepPreview { preview.publish(nil) }; fpsCount = 0; fpsStart = 0; planHistory.removeAll(); frozenAngle = nil
     }
     func beginRecording() { recording = true; frozenAngle = lastPlan?.angle }
     func endRecording() { recording = false; frozenAngle = nil }
     func configure(_ next: CameraSettings, front: Bool, horizontalFOVDegrees: Double? = nil) {
         let geometryReset = self.front != front || settings.framing != next.framing || settings.mirrorSelfie != next.mirrorSelfie
-        if geometryReset { resetGeometry() }
+        if geometryReset { resetGeometry(keepPreview:true) }
         if settings.zoomLock != next.zoomLock { tracker.reset(); pendingTarget = nil; zoomAnchor = nil; frameLockOffset = .zero; frameLockTimestamp = nil }
         if settings.actionStabilization != next.actionStabilization || settings.smartArtifactGuard != next.smartArtifactGuard {
             actionOffset = Point2(0,0); actionTimestamp = nil
@@ -373,8 +373,12 @@ final class FrameProcessor {
         if planHistory.count > 600 { planHistory.removeFirst(planHistory.count-600) }
 
         let previewImage = renderer.applyLook(renderer.transform(source,plan:previewPlan),settings:settings)
-        let recordingImage = recording ? renderer.applyLook(renderer.transform(source,plan:capturePlan),settings:settings) : previewImage
         let target = settings.zoomLock ? Point2(0.5,0.5) : nil
+        if recording {
+            let early=PreviewFrame(image:previewImage,recordingImage:previewImage,overview:source,plan:previewPlan,recordingPlan:previewPlan,target:target,trackingGood:settings.zoomLock && !previewPlan.wasClamped,diagnostics:diagnostics)
+            preview.publish(early)
+        }
+        let recordingImage = recording ? renderer.applyLook(renderer.transform(source,plan:capturePlan),settings:settings) : previewImage
         fpsCount += 1
         if fpsStart == 0 { fpsStart=hostTime }
         if hostTime-fpsStart >= 1 { fps=Double(fpsCount)/(hostTime-fpsStart); fpsStart=hostTime; fpsCount=0 }
