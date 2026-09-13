@@ -51,35 +51,36 @@ enum CaptureMetadata {
         } else {
             metadata = CGImageMetadataCreateMutable()
         }
-        func set(_ dictionary: CFString, _ property: CFString, _ value: Any) {
+        _ = CGImageMetadataRegisterNamespaceForPrefix(metadata,kCGImageMetadataNamespaceTIFF,kCGImageMetadataPrefixTIFF,nil)
+        _ = CGImageMetadataRegisterNamespaceForPrefix(metadata,kCGImageMetadataNamespacePhotoshop,kCGImageMetadataPrefixPhotoshop,nil)
+        _ = CGImageMetadataRegisterNamespaceForPrefix(metadata,kCGImageMetadataNamespaceDublinCore,kCGImageMetadataPrefixDublinCore,nil)
+        func setPath(_ path: String, _ value: CFTypeRef) {
+            _ = CGImageMetadataSetValueWithPath(metadata,nil,path as CFString,value)
+        }
+        func setProperty(_ dictionary: CFString, _ property: CFString, _ value: Any) {
             _ = CGImageMetadataSetValueMatchingImageProperty(metadata,dictionary,property,value as AnyObject)
         }
         if settings.customMetadataEnabled {
-            set(kCGImagePropertyTIFFDictionary,kCGImagePropertyTIFFSoftware,"HorizonCamera")
+            setPath("tiff:Software","HorizonCamera" as CFString)
             if !settings.metadataAuthor.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
-                set(kCGImagePropertyTIFFDictionary,kCGImagePropertyTIFFArtist,settings.metadataAuthor)
-                set(kCGImagePropertyIPTCDictionary,kCGImagePropertyIPTCByline,settings.metadataAuthor)
+                setPath("tiff:Artist",settings.metadataAuthor as CFString)
             }
             if !settings.metadataCopyright.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
-                set(kCGImagePropertyTIFFDictionary,kCGImagePropertyTIFFCopyright,settings.metadataCopyright)
-                set(kCGImagePropertyIPTCDictionary,kCGImagePropertyIPTCCopyrightNotice,settings.metadataCopyright)
+                setPath("tiff:Copyright",settings.metadataCopyright as CFString)
             }
             let description = settings.metadataDescription.isEmpty ? settings.metadataTitle : settings.metadataDescription
             if !description.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
-                set(kCGImagePropertyTIFFDictionary,kCGImagePropertyTIFFImageDescription,description)
+                setPath("tiff:ImageDescription",description as CFString)
             }
             if !settings.metadataTitle.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
-                set(kCGImagePropertyIPTCDictionary,kCGImagePropertyIPTCObjectName,settings.metadataTitle)
-            }
-            if !settings.metadataDescription.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
-                set(kCGImagePropertyIPTCDictionary,kCGImagePropertyIPTCCaptionAbstract,settings.metadataDescription)
+                setPath("photoshop:Headline",settings.metadataTitle as CFString)
             }
             let keywords = settings.metadataKeywords.split(separator:",").map { $0.trimmingCharacters(in:.whitespacesAndNewlines) }.filter { !$0.isEmpty }
-            if !keywords.isEmpty { set(kCGImagePropertyIPTCDictionary,kCGImagePropertyIPTCKeywords,keywords as NSArray) }
+            if !keywords.isEmpty { setPath("dc:subject",keywords as NSArray) }
         }
         if settings.includeLocationMetadata, let location = CaptureLocation.shared.current() {
             for (key,value) in CaptureLocation.gpsDictionary(location) {
-                set(kCGImagePropertyGPSDictionary,key as CFString,value)
+                setProperty(kCGImagePropertyGPSDictionary,key as CFString,value)
             }
         }
         let options: [String:Any] = [
