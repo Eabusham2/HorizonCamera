@@ -37,10 +37,24 @@ enum FrameRateCatalog {
 }
 
 enum Framing: String, CaseIterable, Codable, Identifiable {
-    case portrait = "9:16", landscape = "16:9", square = "1:1", classic = "3:4"
+    case portrait = "9:16", landscape = "16:9", square = "1:1", classic = "3:4", classicLandscape = "4:3"
+    case portrait35 = "2:3", landscape35 = "3:2", portraitSocial = "4:5", landscapeSocial = "5:4"
+    case academy = "1.85:1", cinema = "2.39:1"
     var id: String { rawValue }
     var ratio: Double {
-        switch self { case .portrait: return 9/16; case .landscape: return 16/9; case .square: return 1; case .classic: return 3/4 }
+        switch self {
+        case .portrait: return 9/16
+        case .landscape: return 16/9
+        case .square: return 1
+        case .classic: return 3/4
+        case .classicLandscape: return 4/3
+        case .portrait35: return 2/3
+        case .landscape35: return 3/2
+        case .portraitSocial: return 4/5
+        case .landscapeSocial: return 5/4
+        case .academy: return 1.85
+        case .cinema: return 2.39
+        }
     }
     func size(longEdge: Int) -> Size2 {
         let edge = Double(longEdge)
@@ -201,7 +215,8 @@ struct CameraSettings: Codable, Equatable {
     var portraitBlurRadius = 14.0
     var actionStabilization = false
     var actionNativeAssist = true
-    var actionStrength = 0.75
+    // Kept for backwards-compatible decoding only. Action uses one fixed Apple-like tuning profile.
+    var actionStrength = 0.82
     var panoramaFeather = 0.55
     var dualCaptureLayout: DualCaptureLayout = .pictureInPicture
     var flash: FlashChoice = .off
@@ -274,8 +289,13 @@ struct CameraSettings: Codable, Equatable {
     var previewReserve: Double { zoomLock ? 0.80 : (horizonLock ? 0.97 : 1) }
     var captureReserve: Double {
         var value = previewReserve
-        if actionStabilization || mode == .action { value = min(value, max(0.58, 0.86 - actionStrength * 0.22)) }
-        if smartArtifactGuard && (horizonLock || zoomLock || actionStabilization) { value *= 0.96 }
+        // Action follows a single tuned profile rather than exposing a strength control.
+        if actionStabilization || mode == .action { value = min(value, 0.68) }
+        // Smart uses a gentler Super-Steady-style safety margin even by itself on video.
+        if smartArtifactGuard {
+            if mode.isMovie { value = min(value, actionStabilization ? 0.66 : 0.92) }
+            else if horizonLock || zoomLock { value *= 0.96 }
+        }
         return max(0.50, value)
     }
     var reserve: Double { captureReserve }
@@ -288,7 +308,7 @@ struct CameraSettings: Codable, Equatable {
         styleTone = min(max(styleTone, -1), 1)
         styleWarmth = min(max(styleWarmth, -1), 1)
         portraitBlurRadius = min(max(portraitBlurRadius, 0), 40)
-        actionStrength = min(max(actionStrength, 0), 1)
+        actionStrength = 0.82
         panoramaFeather=min(max(panoramaFeather,0.1),0.9)
         shutterAngle=min(max(shutterAngle,1.1),360)
         whiteBalanceKelvin=min(max(whiteBalanceKelvin,2500),10000)
@@ -391,7 +411,7 @@ struct CameraSettings: Codable, Equatable {
             if !resolution.isRAWFrameSize { resolution = .openGate }
         } else if resolution.isRAWFrameSize { resolution = .ultraHD }
         if mode.isNativeMovieMode || (mode.isMovie && usesNativeMoviePipeline) {
-            if videoFraming == .square || videoFraming == .classic { videoFraming = .portrait }
+            if videoFraming != .portrait && videoFraming != .landscape { videoFraming = .portrait }
             horizonLock = false
             zoomLock = false
             filter = .original

@@ -223,7 +223,9 @@ final class FrameProcessor {
         let geometryReset = self.front != front || settings.framing != next.framing || settings.mirrorSelfie != next.mirrorSelfie
         if geometryReset { resetGeometry() }
         if settings.zoomLock != next.zoomLock { tracker.reset(); pendingTarget = nil; zoomAnchor = nil; frameLockOffset = .zero; frameLockTimestamp = nil }
-        if settings.actionStabilization != next.actionStabilization { actionOffset = Point2(0,0); actionTimestamp = nil }
+        if settings.actionStabilization != next.actionStabilization || settings.smartArtifactGuard != next.smartArtifactGuard {
+            actionOffset = Point2(0,0); actionTimestamp = nil
+        }
         self.settings = next; self.front = front
         if let horizontalFOVDegrees, horizontalFOVDegrees.isFinite, horizontalFOVDegrees > 1 { self.horizontalFOVDegrees = horizontalFOVDegrees }
         if geometryReset { renderedZoom = next.zoom; zoomTimestamp = nil }
@@ -276,17 +278,19 @@ final class FrameProcessor {
             frameLockOffset = .zero; frameLockTimestamp = hostTime
         }
 
-        // Action uses the same immediate timestamp-aligned gyro data but is kept out
-        // of the preview. It only affects the recording image below, like Apple's
-        // stock Camera preview/output split.
-        if settings.actionStabilization, let reading {
+        // Smart and Action share the same timestamp-aligned gyro path but stay out of
+        // the live preview. Smart is a gentle adaptive Super-Steady-style correction;
+        // Action is the stronger fixed profile and can also layer native AVFoundation EIS.
+        let smartSteady = settings.smartArtifactGuard && settings.mode.isMovie
+        if (settings.actionStabilization || smartSteady), let reading {
             let dt = min(0.05,max(0,hostTime-(actionTimestamp ?? hostTime)))
-            let gain = 0.12 + 0.24 * settings.actionStrength
-            let decay = exp(-1.7 * dt)
+            let gain = settings.actionStabilization ? 0.32 : 0.11
+            let decay = exp(-(settings.actionStabilization ? 1.7 : 3.2) * dt)
+            let limit = settings.actionStabilization ? 0.18 : 0.065
             actionOffset = Point2(actionOffset.x*decay - reading.rateY*dt*gain,
                                   actionOffset.y*decay + reading.rateX*dt*gain)
-            actionOffset.x = CropGeometry.clamp(actionOffset.x,-0.18,0.18)
-            actionOffset.y = CropGeometry.clamp(actionOffset.y,-0.18,0.18)
+            actionOffset.x = CropGeometry.clamp(actionOffset.x,-limit,limit)
+            actionOffset.y = CropGeometry.clamp(actionOffset.y,-limit,limit)
             actionTimestamp = hostTime
         } else { actionOffset = Point2(0,0); actionTimestamp = hostTime }
 
@@ -315,6 +319,12 @@ final class FrameProcessor {
                 zoom:renderedZoom,fullTurn:settings.horizonLock,reserve:settings.previewReserve,
                 requestedCenter:Point2(manualCenter.x*size.width,manualCenter.y*size.height))
         }
+        if !settings.zoomLock && zoomAnchor == nil && (abs(manualCenter.x-0.5) > 0.0001 || abs(manualCenter.y-0.5) > 0.0001) {
+            manualCenter = Point2(0.5,0.5)
+            previewPlan = try CropGeometry.plan(source:size,output:settings.outputSize,angle:previewAngle,
+                zoom:renderedZoom,fullTurn:settings.horizonLock,reserve:settings.previewReserve,
+                requestedCenter:Point2(size.width/2,size.height/2))
+        }
 
         if let target=pendingTarget {
             if settings.zoomLock {
@@ -338,12 +348,13 @@ final class FrameProcessor {
         }
 
         // Recording/output plan can be more aggressive than preview. Horizon and
-        // Zoom Lock remain WYSIWYG; Action and Smart Artifact Guard add output-only
+        // Zoom Lock remain WYSIWYG; Action and Smart add output-only
         // motion/crop headroom so the viewfinder stays responsive and uncluttered.
         var captureAngle=previewAngle
-        if settings.actionStabilization && !settings.horizonLock {
+        if !settings.horizonLock {
             let correction=AngleMath.wrap(lastAngle-previewAngle)
-            captureAngle=previewAngle + correction*(0.45 + 0.45*settings.actionStrength)
+            if settings.actionStabilization { captureAngle = previewAngle + correction*0.82 }
+            else if smartSteady { captureAngle = previewAngle + correction*0.14 }
         }
         let captureCenter = Point2(previewPlan.center.x + actionOffset.x*size.width,
                                    previewPlan.center.y + actionOffset.y*size.height)

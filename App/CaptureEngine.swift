@@ -416,22 +416,6 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             }
             controls.append(focus)
         }
-        if settings.actionStabilization {
-            let action = AVCaptureSlider("Action", symbolName:"figure.run", in:Float(0)...Float(100), step:5)
-            action.accessibilityIdentifier = "horizon.action"
-            action.localizedValueFormat = "%.0f%%"
-            action.value = Float(settings.actionStrength*100)
-            action.setActionQueue(sessionQueue) { [weak self] value in
-                guard let self else { return }
-                self.configuration.actionStrength = Double(min(max(value/100,0),1))
-                let snapshot=self.configuration
-                let front=self.videoInput?.device.position == .front
-                let fov=self.videoInput.map { Double($0.device.activeFormat.videoFieldOfView) }
-                self.frameQueue.async { [weak self] in self?.processor.configure(snapshot,front:front,horizontalFOVDegrees:fov) }
-                self.publishControlSettings()
-            }
-            controls.append(action)
-        }
         for control in controls where session.canAddControl(control) { session.addControl(control) }
         session.commitConfiguration()
         session.setControlsDelegate(self,queue:sessionQueue)
@@ -451,8 +435,6 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 let value=Float(min(max(settings.zoom,1),12)); if abs(slider.value-value) > 0.001 { slider.value=value }
             case "horizon.focus":
                 if settings.manualFocus { let value=min(max(settings.lensPosition,0),1); if abs(slider.value-value) > 0.001 { slider.value=value } }
-            case "horizon.action":
-                let value=Float(min(max(settings.actionStrength,0),1)*100); if abs(slider.value-value) > 0.001 { slider.value=value }
             default: break
             }
         }

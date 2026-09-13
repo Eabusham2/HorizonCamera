@@ -347,16 +347,19 @@ final class PipelineTests: XCTestCase {
         XCTAssertGreaterThan(pixel(pip,Point2(350,530),renderer:renderer)[2],180)
     }
 
-    func testActionStrengthUsesMoreStabilizationReserveWithoutChangingOutputSize() throws {
-        var low=CameraSettings(); low.mode = .video; low.horizonLock=false; let l0=low; low.actionStabilization=true; low.actionStrength=0; low.normalize(changedFrom:l0)
-        var high=low; let h0=high; high.actionStrength=1; high.normalize(changedFrom:h0)
-        XCTAssertGreaterThan(low.reserve,high.reserve)
-        let source=Size2(2160,3840), output=low.outputSize
-        let lowPlan=try CropGeometry.plan(source:source,output:output,angle:0,zoom:1,fullTurn:false,reserve:low.reserve)
-        let highPlan=try CropGeometry.plan(source:source,output:output,angle:0,zoom:1,fullTurn:false,reserve:high.reserve)
-        XCTAssertEqual(lowPlan.output,highPlan.output)
-        XCTAssertLessThan(highPlan.sourceDetail.width,lowPlan.sourceDetail.width)
-        XCTAssertLessThan(highPlan.sourceDetail.height,lowPlan.sourceDetail.height)
+    func testActionUsesFixedReserveAndSmartUsesGentlerReserve() throws {
+        var plain=CameraSettings(); plain.mode = .video; plain.horizonLock=false; plain.smartArtifactGuard=false
+        var smart=plain; smart.smartArtifactGuard=true
+        var action=plain; let old=action; action.actionStabilization=true; action.normalize(changedFrom:old)
+        XCTAssertEqual(action.actionStrength,0.82,accuracy:0.001)
+        XCTAssertGreaterThan(plain.reserve,smart.reserve)
+        XCTAssertGreaterThan(smart.reserve,action.reserve)
+        let source=Size2(2160,3840), output=plain.outputSize
+        let smartPlan=try CropGeometry.plan(source:source,output:output,angle:0,zoom:1,fullTurn:false,reserve:smart.reserve)
+        let actionPlan=try CropGeometry.plan(source:source,output:output,angle:0,zoom:1,fullTurn:false,reserve:action.reserve)
+        XCTAssertEqual(smartPlan.output,actionPlan.output)
+        XCTAssertLessThan(actionPlan.sourceDetail.width,smartPlan.sourceDetail.width)
+        XCTAssertLessThan(actionPlan.sourceDetail.height,smartPlan.sourceDetail.height)
     }
 
 
@@ -388,9 +391,51 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(reversing.target,Point2(0.5,0.5))
     }
 
+    func testNormalZoomRecentersAfterPointAnchoredTransition() throws {
+        let renderer=try makeRenderer(), motion=MotionService(), processor=FrameProcessor(motion:motion,renderer:renderer)
+        var settings=CameraSettings(); settings.mode = .video; settings.horizonLock=false; settings.zoomLock=false; settings.smartArtifactGuard=false; settings.videoFraming = .landscape; settings.resolution = .hd
+        processor.configure(settings,front:false,horizontalFOVDegrees:70)
+        let input=try buffer(pattern(width:1280,height:720),renderer:renderer)
+        _=try processor.process(buffer:input,hostTime:1)
+        processor.setZoom(3,atUIKit:Point2(0.8,0.5))
+        var frame=try processor.process(buffer:input,hostTime:1.02)
+        for index in 2...30 { frame=try processor.process(buffer:input,hostTime:1+Double(index)*0.02) }
+        XCTAssertEqual(frame.plan.center.x,640,accuracy:1.0)
+        XCTAssertEqual(frame.plan.center.y,360,accuracy:1.0)
+    }
+
+    func testMiniOverviewFrameMatchesOutputAspectAndActualCropCenter() throws {
+        let output=Framing.portraitSocial.size(longEdge:1000)
+        let plan=try CropGeometry.plan(source:Size2(4000,3000),output:output,angle:0,zoom:2,fullTurn:false,reserve:1,
+            requestedCenter:Point2(1300,1700))
+        let size=CGSize(width:240,height:180)
+        let points=OverviewGeometry.capturePoints(plan:plan,in:size)
+        XCTAssertEqual(points.count,4)
+        let width=abs(points[1].x-points[0].x), height=abs(points[3].y-points[0].y)
+        XCTAssertEqual(Double(width/height),output.width/output.height,accuracy:0.01)
+        let rect=OverviewGeometry.imageRect(source:plan.source,in:size)
+        let expected=CGPoint(x:rect.minX+plan.center.x/plan.source.width*rect.width,
+                             y:rect.minY+(1-plan.center.y/plan.source.height)*rect.height)
+        let actual=CGPoint(x:points.map(\.x).reduce(0,+)/4,y:points.map(\.y).reduce(0,+)/4)
+        XCTAssertEqual(actual.x,expected.x,accuracy:0.5); XCTAssertEqual(actual.y,expected.y,accuracy:0.5)
+    }
+
+    func testSmartSteadyChangesRecordingPlanWithoutWarpingPreview() throws {
+        let renderer=try makeRenderer(), motion=MotionService(), processor=FrameProcessor(motion:motion,renderer:renderer)
+        var settings=CameraSettings(); settings.mode = .video; settings.horizonLock=false; settings.zoomLock=false; settings.actionStabilization=false; settings.smartArtifactGuard=true; settings.videoFraming = .landscape; settings.resolution = .hd
+        processor.configure(settings,front:false,horizontalFOVDegrees:70)
+        let input=try buffer(pattern(width:1280,height:720),renderer:renderer)
+        motion.injectForTesting(MotionReading(time:1,gx:1,gy:0,gz:0,rateZ:0,rateX:0,rateY:0)); _=try processor.process(buffer:input,hostTime:1)
+        motion.injectForTesting(MotionReading(time:1.02,gx:1,gy:0,gz:0,rateZ:0.15,rateX:1.4,rateY:1.8))
+        let frame=try processor.process(buffer:input,hostTime:1.02)
+        XCTAssertEqual(frame.plan.center.x,640,accuracy:1); XCTAssertEqual(frame.plan.center.y,360,accuracy:1)
+        XCTAssertNotEqual(frame.recordingPlan.center,frame.plan.center)
+        XCTAssertEqual(frame.image.extent,frame.recordingImage.extent)
+    }
+
     func testActionAndArtifactGuardAffectRecordingPlanNotLivePreviewPlan() throws {
         let renderer=try makeRenderer(), motion=MotionService(), processor=FrameProcessor(motion:motion,renderer:renderer)
-        var settings=CameraSettings(); settings.mode = .video; settings.horizonLock=false; settings.zoomLock=false; settings.actionStabilization=true; settings.actionStrength=0.8; settings.videoFraming = .landscape; settings.resolution = .hd; settings.smartArtifactGuard=true
+        var settings=CameraSettings(); settings.mode = .video; settings.horizonLock=false; settings.zoomLock=false; settings.actionStabilization=true; settings.videoFraming = .landscape; settings.resolution = .hd; settings.smartArtifactGuard=true
         processor.configure(settings,front:false,horizontalFOVDegrees:70)
         let input=try buffer(pattern(width:1280,height:720),renderer:renderer)
         motion.injectForTesting(MotionReading(time:1,gx:1,gy:0,gz:0,rateZ:0,rateX:0,rateY:0))

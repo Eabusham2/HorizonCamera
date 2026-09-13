@@ -28,6 +28,7 @@ struct CameraView: View {
             if model.settings.mode.isPhotoMode { timerControl; livePhotoControl; rawControl }
             if model.settings.mode.isMovie { hdrControl }
             formatControl
+            aspectControl
             Spacer(minLength:2)
             Button { model.settings.mode.isPhotoMode ? model.change{$0.grid.toggle()} : model.change{$0.showLevel.toggle()} } label: {
                 Image(systemName:model.settings.mode.isPhotoMode ? "grid" : "level")
@@ -139,6 +140,25 @@ struct CameraView: View {
         }
         .disabled(!model.canConfigure)
     }
+    private var aspectControl: some View {
+        Menu {
+            Section("Output Aspect") {
+                ForEach(Framing.allCases) { framing in
+                    Button(framing.rawValue) {
+                        model.change {
+                            if $0.mode.isPhotoMode { $0.photoFraming = framing }
+                            else { $0.videoFraming = framing }
+                        }
+                    }
+                    .disabled(!framingAvailable(framing))
+                }
+            }
+            Text("The mini overview yellow frame always matches the selected output aspect and real crop.")
+        } label: {
+            Text(model.settings.framing.rawValue).font(.system(size:10,weight:.bold,design:.rounded))
+        }
+        .disabled(!model.canConfigure || model.settings.mode == .portrait || model.settings.mode.isStandaloneCaptureMode)
+    }
 
     private var viewfinder: some View {
         GeometryReader { geometry in
@@ -155,10 +175,10 @@ struct CameraView: View {
                         HStack(alignment:.top) {
                             if model.settings.aeafLock { Text("AE/AF LOCK").font(.caption2.bold()).foregroundStyle(.yellow) }
                             Spacer()
-                            if model.settings.zoomLock && model.settings.showOverview {
+                            if model.settings.showOverview {
                                 OverviewView(feed:feed,renderer:renderer)
-                                    .frame(width:48,height:84).clipShape(RoundedRectangle(cornerRadius:7))
-                                    .overlay(RoundedRectangle(cornerRadius:7).stroke(.white.opacity(0.45),lineWidth:0.7))
+                                    .frame(width:92,height:126).clipShape(RoundedRectangle(cornerRadius:9))
+                                    .overlay(RoundedRectangle(cornerRadius:9).stroke(.white.opacity(0.45),lineWidth:0.8))
                             }
                         }
                         Spacer()
@@ -173,13 +193,6 @@ struct CameraView: View {
                             }
                         }
                         ZoomRail(model:model).frame(height:34).padding(.top,6)
-                        if model.settings.actionStabilization {
-                            HStack(spacing:8) {
-                                Image(systemName:"figure.run").font(.caption2)
-                                Slider(value:model.binding(\.actionStrength),in:0...1,step:0.05).tint(.white.opacity(0.8))
-                                Text("\(Int(model.settings.actionStrength*100))%").font(.caption2.monospacedDigit())
-                            }.frame(maxWidth:210).padding(.horizontal,8).padding(.vertical,3).background(.black.opacity(0.28),in:Capsule())
-                        }
                     }.padding(8)
                 }
                 if showLiveTextPanel && model.settings.showDetectedText && !model.detectedText.isEmpty {
@@ -247,6 +260,8 @@ struct CameraView: View {
                            disabled:model.settings.usesNativeMoviePipeline || model.settings.mode == .portrait || model.settings.mode.isStandaloneCaptureMode || model.settings.actionStabilization) { model.change{$0.zoomLock.toggle()} }
                 lockButton("Action",icon:"figure.run",enabled:model.settings.actionStabilization,
                            disabled:model.settings.mode != .video || model.settings.fps > 60) { model.change{$0.actionStabilization.toggle()} }
+                lockButton("Smart",icon:"sparkles",enabled:model.settings.smartArtifactGuard,
+                           disabled:model.settings.usesNativeMoviePipeline || model.settings.mode.isStandaloneCaptureMode) { model.change{$0.smartArtifactGuard.toggle()} }
             }
             HStack(spacing:7) {
                 ScrollView(.horizontal,showsIndicators:false) {
@@ -337,6 +352,14 @@ struct CameraView: View {
         }.disabled(!model.canConfigure || disabled).accessibilityValue(enabled ? "On":"Off")
     }
 
+    private func framingAvailable(_ framing: Framing) -> Bool {
+        if model.settings.mode == .portrait || model.settings.mode.isStandaloneCaptureMode { return framing == model.settings.framing }
+        if model.settings.mode.isMovie && model.settings.usesNativeMoviePipeline {
+            return framing == .portrait || framing == .landscape
+        }
+        return true
+    }
+
     private var rawAvailable: Bool {
         model.capabilities.raw && !model.settings.isProcessedPhoto && model.settings.mode == .photo && !model.settings.constantColor
     }
@@ -411,6 +434,24 @@ private struct CameraHardwareCaptureModifier: ViewModifier {
     }
 }
 
+struct OverviewGeometry {
+    static func imageRect(source: Size2, in size: CGSize) -> CGRect {
+        guard source.width > 0, source.height > 0, size.width > 0, size.height > 0 else { return .zero }
+        let ratio = source.width/source.height
+        let width = min(size.width,size.height*ratio), height = width/ratio
+        return CGRect(x:(size.width-width)/2,y:(size.height-height)/2,width:width,height:height)
+    }
+    static func capturePoints(plan: CropPlan, in size: CGSize) -> [CGPoint] {
+        let rect=imageRect(source:plan.source,in:size)
+        let corners=[Point2(0,0),Point2(plan.output.width,0),Point2(plan.output.width,plan.output.height),Point2(0,plan.output.height)]
+        return corners.map { corner in
+            let q=plan.outputToSource(corner)
+            return CGPoint(x:rect.minX+q.x/plan.source.width*rect.width,
+                           y:rect.minY+(1-q.y/plan.source.height)*rect.height)
+        }
+    }
+}
+
 struct OverviewView: View {
     let feed: PreviewFeed
     let renderer: ImageRenderer
@@ -419,17 +460,12 @@ struct OverviewView: View {
             MetalPreview(feed:feed,renderer:renderer,overview:true)
             Canvas { context,size in
                 guard let frame=feed.snapshot() else { return }
-                let p=frame.plan, ratio=p.source.width/p.source.height
-                let w=min(size.width,size.height*ratio), h=w/ratio
-                let origin=CGPoint(x:(size.width-w)/2,y:(size.height-h)/2)
-                let corners=[Point2(0,0),Point2(p.output.width,0),Point2(p.output.width,p.output.height),Point2(0,p.output.height)]
-                var path=Path()
-                for (i,corner) in corners.enumerated() {
-                    let q=p.outputToSource(corner)
-                    let mapped=CGPoint(x:origin.x+q.x/p.source.width*w,y:origin.y+(1-q.y/p.source.height)*h)
-                    if i == 0 { path.move(to:mapped) } else { path.addLine(to:mapped) }
-                }
-                path.closeSubpath(); context.stroke(path,with:.color(frame.trackingGood ? .yellow:.orange),lineWidth:1)
+                let points=OverviewGeometry.capturePoints(plan:frame.plan,in:size)
+                guard let first=points.first else { return }
+                var path=Path(); path.move(to:first)
+                for point in points.dropFirst() { path.addLine(to:point) }
+                path.closeSubpath()
+                context.stroke(path,with:.color(.yellow),lineWidth:1.5)
             }
         }.allowsHitTesting(false)
     }

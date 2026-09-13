@@ -27,8 +27,7 @@ struct CameraSettingsView: View {
 
     private var smartSection: some View {
         Section("Smart") {
-            Toggle("Smart Artifact Guard",isOn:model.binding(\.smartArtifactGuard))
-            Text("Adds a small output-only safety crop during sensor-driven stabilization to keep rotated/tilted edges from producing circular or repeated-edge artifacts. Horizon and Zoom Lock still preview live.")
+            Text("Smart stabilization is controlled from the main Horizon / Zoom Lock / Action / Smart panel. Lens correction and the camera-aware helpers below stay here.")
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("Lens correction",isOn:model.binding(\.contentAwareDistortionCorrection))
                 .disabled(!model.capabilities.contentAwareDistortionCorrection)
@@ -72,10 +71,8 @@ struct CameraSettingsView: View {
             Toggle("Action Stabilization", isOn:model.binding(\.actionStabilization))
                 .disabled(model.settings.mode != .video)
             if model.settings.actionStabilization {
-                LabeledContent("Action strength",value:String(format:"%.0f%%",model.settings.actionStrength*100))
-                Slider(value:model.binding(\.actionStrength),in:0...1,step:0.05)
                 Toggle("Native stabilization assist",isOn:model.binding(\.actionNativeAssist))
-                Text("Native assist requests the strongest public AVFoundation stabilization mode reported by the active format. It is not Apple's private stock Camera Action Mode.")
+                Text("Action uses one fixed tuned profile plus the strongest supported public AVFoundation stabilization when Native Assist is enabled. There is no user strength slider.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if model.settings.mode.isMovie {
@@ -83,7 +80,7 @@ struct CameraSettingsView: View {
                     ForEach(model.capabilities.supportedStabilizationModes) { Text($0.rawValue).tag($0) }
                 }.disabled(model.settings.horizonLock || model.settings.zoomLock || model.settings.actionStabilization)
             }
-            Toggle("Show wide-view inset", isOn:model.binding(\.showOverview))
+            Toggle("Mini full-lens overview", isOn:model.binding(\.showOverview))
             Button("Reset crop and tracking") { model.resetFraming() }
             Text("Horizon Lock, Zoom Lock and Action Stabilization affect saved output. Action can layer HorizonCamera's gyro/crop correction over the strongest public native stabilization the active format supports. Native Cinematic, Spatial, ProRes/Log and multichannel recording keep AVFoundation's native movie pipeline, so incompatible custom transforms are disabled rather than shown as fake effects.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -252,9 +249,10 @@ struct CameraSettingsView: View {
             Toggle("Grid", isOn:model.binding(\.grid))
             Toggle("Level indicator", isOn:model.binding(\.showLevel))
             Toggle("Mirror front camera", isOn:model.binding(\.mirrorSelfie))
+            Toggle("Mini full-lens overview", isOn:model.binding(\.showOverview))
             if model.capabilities.qrScanning { Toggle("Scan QR codes", isOn:model.binding(\.scanQRCodes)) }
             if model.capabilities.liveText { Toggle("Live Text detection",isOn:model.binding(\.showDetectedText)) }
-            Text("Live Text detects quietly; the text panel only opens after you tap the Live Text button. Grid is off by default. Persistent settings are remembered; live zoom resets to 1× each launch.")
+            Text("Live Text detects quietly; the text panel only opens after you tap the Live Text button. Mini overview is off by default and shows the full active lens with the actual output crop in yellow. Grid is off by default. Persistent settings are remembered; live zoom resets to 1× each launch.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

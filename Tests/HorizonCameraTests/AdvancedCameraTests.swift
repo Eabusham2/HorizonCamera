@@ -113,7 +113,7 @@ final class AdvancedCameraTests: XCTestCase {
         action.normalize(changedFrom:a0)
         XCTAssertTrue(action.actionStabilization); XCTAssertTrue(action.actionNativeAssist); XCTAssertFalse(action.zoomLock)
         XCTAssertEqual(action.codec,.proRes422); XCTAssertEqual(action.colorProfile,.hdrHLG); XCTAssertEqual(action.audioMode,.stereo)
-        XCTAssertFalse(action.horizonLock); XCTAssertEqual(action.actionStrength,0.9,accuracy:0.001); XCTAssertLessThan(action.captureReserve,0.86)
+        XCTAssertFalse(action.horizonLock); XCTAssertEqual(action.actionStrength,0.82,accuracy:0.001); XCTAssertLessThan(action.captureReserve,0.70)
 
         var legacy=CameraSettings(); let legacyOld=legacy; legacy.mode = .action; legacy.normalize(changedFrom:legacyOld)
         XCTAssertEqual(legacy.mode,.video); XCTAssertTrue(legacy.actionStabilization); XCTAssertTrue(legacy.horizonLock)
@@ -168,18 +168,19 @@ final class AdvancedCameraTests: XCTestCase {
         XCTAssertTrue(decoded.manualWhiteBalance); XCTAssertEqual(decoded.whiteBalanceKelvin,4300,accuracy:0.001); XCTAssertEqual(decoded.whiteBalanceTint,12,accuracy:0.001)
     }
 
-    func testActionTickDefaultsMigrationAndLiveStrengthPolicy() throws {
+    func testActionTickDefaultsMigrationAndFixedProfilePolicy() throws {
         let defaults=CameraSettings()
-        XCTAssertFalse(defaults.actionStabilization); XCTAssertTrue(defaults.actionNativeAssist); XCTAssertEqual(defaults.actionStrength,0.75,accuracy:0.001)
+        XCTAssertFalse(defaults.actionStabilization); XCTAssertTrue(defaults.actionNativeAssist); XCTAssertEqual(defaults.actionStrength,0.82,accuracy:0.001)
         XCTAssertFalse(CameraMode.visibleCases.contains(.action))
 
         let legacyJSON = #"{"mode":"ACTION","actionStrength":0.6,"horizonLock":true}"#.data(using:.utf8)!
         let migrated=try XCTUnwrap(CameraModel.decodeSettingsMigrating(legacyJSON))
         XCTAssertEqual(migrated.mode,.video); XCTAssertTrue(migrated.actionStabilization); XCTAssertTrue(migrated.horizonLock)
-        XCTAssertEqual(migrated.actionStrength,0.6,accuracy:0.001)
+        XCTAssertEqual(migrated.actionStrength,0.82,accuracy:0.001)
 
         var action=CameraSettings(); action.horizonLock=false; let before=action; action.actionStabilization=true; action.normalize(changedFrom:before)
         var adjusted=action; let actionBefore=adjusted; adjusted.actionStrength=0.95; adjusted.normalize(changedFrom:actionBefore)
+        XCTAssertEqual(adjusted.actionStrength,0.82,accuracy:0.001)
         XCTAssertFalse(adjusted.requiresCaptureReconfiguration(comparedTo:action))
         var nativeToggle=adjusted; nativeToggle.actionNativeAssist.toggle()
         XCTAssertFalse(nativeToggle.requiresCaptureReconfiguration(comparedTo:adjusted))
@@ -197,6 +198,17 @@ final class AdvancedCameraTests: XCTestCase {
         XCTAssertFalse(s.grid); XCTAssertFalse(s.showOverview)
         XCTAssertTrue(s.showDetectedText); XCTAssertTrue(s.smartArtifactGuard)
         XCTAssertFalse(s.customMetadataEnabled); XCTAssertFalse(s.includeLocationMetadata)
+    }
+
+    func testExpandedOutputAspectRatiosAreRealCrops() {
+        XCTAssertEqual(Framing.classic.ratio,3.0/4.0,accuracy:0.0001)
+        XCTAssertEqual(Framing.classicLandscape.ratio,4.0/3.0,accuracy:0.0001)
+        XCTAssertEqual(Framing.portrait35.ratio,2.0/3.0,accuracy:0.0001)
+        XCTAssertEqual(Framing.landscape35.ratio,3.0/2.0,accuracy:0.0001)
+        XCTAssertEqual(Framing.portraitSocial.ratio,4.0/5.0,accuracy:0.0001)
+        XCTAssertEqual(Framing.landscapeSocial.ratio,5.0/4.0,accuracy:0.0001)
+        XCTAssertEqual(Framing.academy.ratio,1.85,accuracy:0.0001)
+        XCTAssertEqual(Framing.cinema.ratio,2.39,accuracy:0.0001)
     }
 
     func testCustomMetadataOffPreservesSourceWithoutInjectingHorizonFields() throws {
