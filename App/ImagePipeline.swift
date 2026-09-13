@@ -205,6 +205,7 @@ final class FrameProcessor {
     private var pendingTarget: Point2?
     private(set) var lastPlan: CropPlan?
     private var frozenAngle: Double?
+    private var recording = false
     private var planHistory: [(Double, CropPlan)] = []
     private var fpsStart = 0.0
     private var fpsCount = 0
@@ -217,8 +218,8 @@ final class FrameProcessor {
         renderedZoom = settings.zoom
         preview.publish(nil); fpsCount = 0; fpsStart = 0; planHistory.removeAll(); frozenAngle = nil
     }
-    func beginRecording() { frozenAngle = lastPlan?.angle }
-    func endRecording() { frozenAngle = nil }
+    func beginRecording() { recording = true; frozenAngle = lastPlan?.angle }
+    func endRecording() { recording = false; frozenAngle = nil }
     func configure(_ next: CameraSettings, front: Bool, horizontalFOVDegrees: Double? = nil) {
         let geometryReset = self.front != front || settings.framing != next.framing || settings.mirrorSelfie != next.mirrorSelfie
         if geometryReset { resetGeometry() }
@@ -281,8 +282,8 @@ final class FrameProcessor {
         // Smart and Action share the same timestamp-aligned gyro path but stay out of
         // the live preview. Smart is a gentle adaptive Super-Steady-style correction;
         // Action is the stronger fixed profile and can also layer native AVFoundation EIS.
-        let smartSteady = settings.smartArtifactGuard && settings.mode.isMovie
-        if (settings.actionStabilization || smartSteady), let reading {
+        let smartSteady = recording && settings.smartArtifactGuard && settings.mode.isMovie
+        if recording && (settings.actionStabilization || smartSteady), let reading {
             let dt = min(0.05,max(0,hostTime-(actionTimestamp ?? hostTime)))
             let gain = settings.actionStabilization ? 0.32 : 0.11
             let decay = exp(-(settings.actionStabilization ? 1.7 : 3.2) * dt)
@@ -356,18 +357,23 @@ final class FrameProcessor {
             if settings.actionStabilization { captureAngle = previewAngle + correction*0.82 }
             else if smartSteady { captureAngle = previewAngle + correction*0.14 }
         }
-        let captureCenter = Point2(previewPlan.center.x + actionOffset.x*size.width,
-                                   previewPlan.center.y + actionOffset.y*size.height)
-        let capturePlan = try CropGeometry.plan(source:size, output:settings.outputSize, angle:captureAngle,
-            zoom:renderedZoom, fullTurn:settings.horizonLock, reserve:settings.captureReserve,
-            requestedCenter:captureCenter)
+        let capturePlan: CropPlan
+        if recording {
+            let captureCenter = Point2(previewPlan.center.x + actionOffset.x*size.width,
+                                       previewPlan.center.y + actionOffset.y*size.height)
+            capturePlan = try CropGeometry.plan(source:size, output:settings.outputSize, angle:captureAngle,
+                zoom:renderedZoom, fullTurn:settings.horizonLock, reserve:settings.captureReserve,
+                requestedCenter:captureCenter)
+        } else {
+            capturePlan = previewPlan
+        }
 
         lastPlan = previewPlan
         planHistory.append((hostTime,capturePlan))
         if planHistory.count > 600 { planHistory.removeFirst(planHistory.count-600) }
 
         let previewImage = renderer.applyLook(renderer.transform(source,plan:previewPlan),settings:settings)
-        let recordingImage = renderer.applyLook(renderer.transform(source,plan:capturePlan),settings:settings)
+        let recordingImage = recording ? renderer.applyLook(renderer.transform(source,plan:capturePlan),settings:settings) : previewImage
         let target = settings.zoomLock ? Point2(0.5,0.5) : nil
         fpsCount += 1
         if fpsStart == 0 { fpsStart=hostTime }

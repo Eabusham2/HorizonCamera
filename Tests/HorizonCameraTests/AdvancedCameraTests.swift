@@ -43,7 +43,7 @@ final class AdvancedCameraTests: XCTestCase {
         s.normalize(changedFrom: old)
         XCTAssertTrue(s.mode.isPhotoMode); XCTAssertFalse(s.mode.isMovie)
         XCTAssertTrue(s.depthData); XCTAssertTrue(s.portraitEffectsMatte)
-        XCTAssertFalse(s.horizonLock); XCTAssertFalse(s.zoomLock); XCTAssertFalse(s.raw); XCTAssertFalse(s.livePhoto)
+        XCTAssertTrue(s.horizonLock); XCTAssertTrue(s.zoomLock); XCTAssertFalse(s.raw); XCTAssertFalse(s.livePhoto)
         XCTAssertEqual(s.filter,.original); XCTAssertEqual(s.photoFraming,.classic)
     }
     func testConstantColorForcesCompatibleFlashAndDisablesRawLive() {
@@ -107,13 +107,17 @@ final class AdvancedCameraTests: XCTestCase {
     }
 
     func testApproximationModesNormalizeWithoutPretendingNativePipelines() {
-        var action=CameraSettings(); let a0=action
-        action.mode = .video; action.actionStabilization = true; action.actionNativeAssist = true; action.actionStrength = 0.9
-        action.zoomLock=true; action.colorProfile = .hdrHLG; action.codec = .proRes422; action.audioMode = .stereo
+        var action=CameraSettings(); action.horizonLock=false; let a0=action
+        action.mode = .video; action.actionStabilization = true; action.actionNativeAssist = true; action.actionStrength = 0.9; action.zoomLock=true
         action.normalize(changedFrom:a0)
-        XCTAssertTrue(action.actionStabilization); XCTAssertTrue(action.actionNativeAssist); XCTAssertFalse(action.zoomLock)
-        XCTAssertEqual(action.codec,.proRes422); XCTAssertEqual(action.colorProfile,.hdrHLG); XCTAssertEqual(action.audioMode,.stereo)
-        XCTAssertFalse(action.horizonLock); XCTAssertEqual(action.actionStrength,0.82,accuracy:0.001); XCTAssertLessThan(action.captureReserve,0.70)
+        XCTAssertTrue(action.actionStabilization); XCTAssertTrue(action.actionNativeAssist); XCTAssertTrue(action.zoomLock)
+        XCTAssertEqual(action.actionStrength,0.82,accuracy:0.001); XCTAssertLessThan(action.captureReserve,0.70)
+
+        var incompatible=CameraSettings(); incompatible.horizonLock=false; let i0=incompatible
+        incompatible.actionStabilization=true; incompatible.colorProfile = .hdrHLG; incompatible.codec = .proRes422; incompatible.audioMode = .stereo
+        incompatible.normalize(changedFrom:i0)
+        XCTAssertFalse(incompatible.actionStabilization)
+        XCTAssertEqual(incompatible.codec,.proRes422); XCTAssertEqual(incompatible.colorProfile,.hdrHLG); XCTAssertEqual(incompatible.audioMode,.stereo)
 
         var legacy=CameraSettings(); let legacyOld=legacy; legacy.mode = .action; legacy.normalize(changedFrom:legacyOld)
         XCTAssertEqual(legacy.mode,.video); XCTAssertTrue(legacy.actionStabilization); XCTAssertTrue(legacy.horizonLock)
@@ -195,9 +199,10 @@ final class AdvancedCameraTests: XCTestCase {
     func testNewUXDefaultsAreSafeAndUncluttered() {
         let s=CameraSettings()
         XCTAssertEqual(s.zoom,1,accuracy:0.0001)
-        XCTAssertFalse(s.grid); XCTAssertFalse(s.showOverview)
+        XCTAssertFalse(s.grid); XCTAssertTrue(s.showOverview); XCTAssertFalse(s.showStats)
         XCTAssertTrue(s.showDetectedText); XCTAssertTrue(s.smartArtifactGuard)
-        XCTAssertFalse(s.customMetadataEnabled); XCTAssertFalse(s.includeLocationMetadata)
+        XCTAssertFalse(s.customMetadataEnabled); XCTAssertTrue(s.includeLocationMetadata)
+        XCTAssertEqual(s.stabilization,.standard)
     }
 
     func testExpandedOutputAspectRatiosAreRealCrops() {
@@ -237,11 +242,18 @@ final class AdvancedCameraTests: XCTestCase {
         XCTAssertTrue(s.usesNativeMoviePipeline); XCTAssertFalse(s.horizonLock); XCTAssertFalse(s.zoomLock)
     }
 
-    func testActionMatchesPublicAppleEnvelopeAndDoesNotForceSDR() {
-        var s=CameraSettings(); let old=s; s.mode = .video; s.resolution = .ultraHD; s.fps=120; s.actionStabilization=true; s.codec = .efficient; s.colorProfile = .hdrHLG
+    func testActionDoesNotSilentlyRewriteIncompatibleSelections() {
+        var s=CameraSettings(); let old=s
+        s.mode = .video; s.resolution = .ultraHD; s.fps=120; s.actionStabilization=true; s.codec = .efficient; s.colorProfile = .hdrHLG
         s.normalize(changedFrom:old)
-        XCTAssertEqual(s.fps,60,accuracy:0.001); XCTAssertEqual(s.resolution,.action2_8K)
-        XCTAssertEqual(s.colorProfile,.hdrHLG); XCTAssertTrue(s.actionStabilization); XCTAssertFalse(s.zoomLock)
+        XCTAssertEqual(s.fps,120,accuracy:0.001); XCTAssertEqual(s.resolution,.ultraHD)
+        XCTAssertEqual(s.colorProfile,.hdrHLG); XCTAssertFalse(s.actionStabilization)
+
+        var compatible=CameraSettings(); compatible.horizonLock=false; let before=compatible
+        compatible.resolution = .ultraHD; compatible.actionStabilization=true
+        compatible.normalize(changedFrom:before)
+        XCTAssertTrue(compatible.actionStabilization); XCTAssertEqual(compatible.resolution,.ultraHD)
+        XCTAssertEqual(compatible.effectiveOutputResolution,.action2_8K)
     }
 
     func testModeHelpAndExpandedFrameSizesAreComplete() {

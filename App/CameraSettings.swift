@@ -201,7 +201,8 @@ struct CameraSettings: Codable, Equatable {
     var zoom = 1.0
     var grid = false
     var showLevel = true
-    var showOverview = false
+    var showOverview = true
+    var showStats = false
     var scanQRCodes = true
     var showDetectedText = true
     var smartArtifactGuard = true
@@ -240,7 +241,7 @@ struct CameraSettings: Codable, Equatable {
     var filter: CaptureFilter = .original
     var codec: CodecChoice = .efficient
     var colorProfile: VideoColorProfile = .sdr
-    var stabilization: StabilizationChoice = .auto
+    var stabilization: StabilizationChoice = .standard
     var exposureEV: Float = 0
     var aeafLock = false
     var manualFocus = false
@@ -274,7 +275,7 @@ struct CameraSettings: Codable, Equatable {
     var metadataCopyright = ""
     var metadataDescription = ""
     var metadataKeywords = ""
-    var includeLocationMetadata = false
+    var includeLocationMetadata = true
     var horizonTrimDegrees = 0.0
     var motionOffsetMilliseconds = 0.0
 
@@ -282,9 +283,16 @@ struct CameraSettings: Codable, Equatable {
     var hasCustomStyle: Bool { photographicStyle != .standard || abs(styleTone) > 0.001 || abs(styleWarmth) > 0.001 }
     var isProcessedPhoto: Bool { mode.isPhotoMode && mode != .panorama && mode != .spatialPhoto && (mode == .portrait || horizonLock || zoomLock || zoom > 1.001 || filter != .original || photoFraming != .classic || hasCustomStyle || portraitLighting != .natural || computationalPhoto != .off) }
     var captureFPS: Double { mode == .slowMotion ? Double(slowMotionFPS) : fps }
+    var effectiveOutputResolution: Resolution {
+        if actionStabilization && !resolution.isRAWFrameSize && resolution.longEdge > Resolution.action2_8K.longEdge {
+            return .action2_8K
+        }
+        return resolution
+    }
     var outputSize: Size2 {
-        if let exact=resolution.exactSize { return exact }
-        return framing.size(longEdge:mode == .slowMotion ? min(1920,resolution.longEdge) : resolution.longEdge)
+        let outputResolution = effectiveOutputResolution
+        if let exact=outputResolution.exactSize { return exact }
+        return framing.size(longEdge:mode == .slowMotion ? min(1920,outputResolution.longEdge) : outputResolution.longEdge)
     }
     var previewReserve: Double { zoomLock ? 0.80 : (horizonLock ? 0.97 : 1) }
     var captureReserve: Double {
@@ -324,16 +332,10 @@ struct CameraSettings: Codable, Equatable {
             mode = .video
             actionStabilization = true
         }
-        if actionStabilization {
-            if mode != .video {
-                actionStabilization=false
-            } else {
-                zoomLock=false
-                fps=min(fps,60)
-                if resolution == .ultraHD || resolution.isRAWFrameSize { resolution = .action2_8K }
-                photographicStyle = .standard
-                filter = .original
-            }
+        if actionStabilization && (mode != .video || fps > 60 || usesNativeMoviePipeline) {
+            // Keep incompatible choices unchanged. The Action control becomes unavailable
+            // instead of silently rewriting FPS, codec, color, style or framing locks.
+            actionStabilization = false
         }
         if mode == .panorama || mode == .spatialPhoto {
             horizonLock = false
@@ -371,8 +373,6 @@ struct CameraSettings: Codable, Equatable {
             smartFraming = false
             depthData = true
             portraitEffectsMatte = true
-            horizonLock = false
-            zoomLock = false
             filter = .original
             raw = false
             livePhoto = false
@@ -453,6 +453,7 @@ struct LensOption: Identifiable, Equatable {
     let isFront: Bool
     let isVirtual: Bool
     let factor: Double
+    let focalLengthMM: Int
 }
 
 struct CameraCapabilities {

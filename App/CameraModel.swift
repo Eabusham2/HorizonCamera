@@ -58,6 +58,14 @@ import Photos
         if let data=try? Data(contentsOf:settingsURL), let saved=Self.decodeSettingsMigrating(data) {
             settings=Self.preparedForLaunch(saved)
         }
+        let uxDefaultsKey = "HorizonCamera.UXDefaults.v2"
+        if !UserDefaults.standard.bool(forKey:uxDefaultsKey) {
+            settings.showOverview = true
+            settings.showStats = false
+            settings.includeLocationMetadata = true
+            if settings.stabilization == .auto { settings.stabilization = .standard }
+            UserDefaults.standard.set(true,forKey:uxDefaultsKey)
+        }
         engine?.onState = { [weak self] state in
             guard let self, !self.nativeMovie.isRecording else { return }
             self.state = state
@@ -142,7 +150,7 @@ import Photos
         if AVCaptureDevice.authorizationStatus(for:.audio) == .notDetermined { microphone = await AVCaptureDevice.requestAccess(for:.audio) }
         if !requestedStartupPermissions {
             requestedStartupPermissions = true
-            if PHPhotoLibrary.authorizationStatus(for:.addOnly) == .notDetermined { _ = await PHPhotoLibrary.requestAuthorization(for:.addOnly) }
+            if PHPhotoLibrary.authorizationStatus(for:.readWrite) == .notDetermined { _ = await PHPhotoLibrary.requestAuthorization(for:.readWrite) }
             await CaptureLocation.shared.requestAuthorizationOnly()
             engine.motion.requestAuthorizationIfNeeded()
         }
@@ -170,6 +178,19 @@ import Photos
         if backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(backgroundTask); backgroundTask = .invalid }
     }
 
+    private func needsAdvancedLiveApply(_ old: CameraSettings, _ next: CameraSettings) -> Bool {
+        old.centerStage != next.centerStage || old.smartFraming != next.smartFraming ||
+        old.lensCleaningHints != next.lensCleaningHints || old.lockCameraSwitching != next.lockCameraSwitching ||
+        old.autoFPS != next.autoFPS || old.smoothAutofocus != next.smoothAutofocus ||
+        old.faceDrivenAutofocus != next.faceDrivenAutofocus || old.focusRange != next.focusRange ||
+        old.responsiveCapture != next.responsiveCapture || old.zeroShutterLag != next.zeroShutterLag ||
+        old.fastCapturePrioritization != next.fastCapturePrioritization || old.autoDeferredPhotoDelivery != next.autoDeferredPhotoDelivery ||
+        old.depthData != next.depthData || old.portraitEffectsMatte != next.portraitEffectsMatte || old.semanticMattes != next.semanticMattes ||
+        old.constantColor != next.constantColor || old.sensorOrientationCompensation != next.sensorOrientationCompensation ||
+        old.contentAwareDistortionCorrection != next.contentAwareDistortionCorrection || old.colorProfile != next.colorProfile ||
+        old.audioMode != next.audioMode || old.windNoiseRemoval != next.windNoiseRemoval
+    }
+
     func change(_ edit: (inout CameraSettings) -> Void) {
         guard canConfigure else { return }
         let old = settings
@@ -181,7 +202,7 @@ import Photos
         settingsTask?.cancel()
         if !next.requiresCaptureReconfiguration(comparedTo: old) {
             engine?.update(next)
-            if let engine { NativeMovieController.applyLiveSettings(next,engine:engine) }
+            if needsAdvancedLiveApply(old,next), let engine { NativeMovieController.applyLiveSettings(next,engine:engine) }
             settingsTask = Task { [weak self] in
                 try? await Task.sleep(for:.milliseconds(120))
                 if !Task.isCancelled { self?.persist() }
@@ -206,13 +227,13 @@ import Photos
         switch codec {
         case .efficient: return true
         case .compatible: return settings.colorProfile == .sdr
-        case .proResLT, .proRes422, .proResHQ: return settings.mode == .video && capabilities.proRes
+        case .proResLT, .proRes422, .proResHQ: return settings.mode == .video && !settings.actionStabilization && capabilities.proRes
         case .proResRAW: return settings.mode == .video && !settings.actionStabilization && capabilities.proResRAW
         case .proResRAWHQ: return settings.mode == .video && !settings.actionStabilization && capabilities.proResRAWHQ
         }
     }
     func colorProfileAvailable(_ profile: VideoColorProfile) -> Bool {
-        guard settings.mode == .video, !settings.codec.isProResRAW else { return profile == .sdr && !settings.codec.isProResRAW }
+        guard settings.mode == .video, !settings.codec.isProResRAW, !settings.actionStabilization else { return profile == .sdr && !settings.codec.isProResRAW }
         switch profile {
         case .sdr: return true
         case .hdrHLG: return capabilities.hdrHLG && settings.codec != .compatible
@@ -292,6 +313,9 @@ import Photos
     var currentLensFactor: Double {
         capabilities.lenses.first(where:{$0.id == capabilities.selectedLens})?.factor ?? 1
     }
+    var currentFocalLengthMM: Int { capabilities.lenses.first(where:{$0.id == capabilities.selectedLens})?.focalLengthMM ?? 24 }
+    var displayFocalLengthMM: Int { max(1,Int((Double(currentFocalLengthMM) * settings.zoom).rounded())) }
+    var isFrontCamera: Bool { capabilities.lenses.first(where:{$0.id == capabilities.selectedLens})?.isFront ?? false }
     var displayZoom: Double { currentLensFactor * settings.zoom }
     var zoomDots: [Double] { capabilities.lenses.filter{!$0.isFront && !$0.isVirtual}.map{$0.factor}.sorted() }
     var zoomRange: ClosedRange<Double> {

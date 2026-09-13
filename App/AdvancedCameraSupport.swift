@@ -63,7 +63,6 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
         result.faceDrivenAutofocus = device.isFocusModeSupported(.continuousAutoFocus)
         var stabilizationModes: [StabilizationChoice] = [.off]
         for choice in [StabilizationChoice.standard, .cinematic, .extended] where format.isVideoStabilizationModeSupported(choice.avMode) { stabilizationModes.append(choice) }
-        if format.isVideoStabilizationModeSupported(.auto) { stabilizationModes.append(.auto) }
         if #available(iOS 18.0, *), format.isVideoStabilizationModeSupported(.cinematicExtendedEnhanced) { stabilizationModes.append(.enhanced) }
         if #available(iOS 26.0, *) {
             if format.isVideoStabilizationModeSupported(.previewOptimized) { stabilizationModes.append(.previewOptimized) }
@@ -118,9 +117,6 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
     }
 
     static func preferredStabilization(_ settings: CameraSettings, format: AVCaptureDevice.Format) -> AVCaptureVideoStabilizationMode {
-        if settings.actionStabilization {
-            return settings.actionNativeAssist ? preferredActionNativeStabilization(for:format) : .off
-        }
         if settings.horizonLock || settings.zoomLock { return .off }
         let requested = settings.stabilization.avMode
         return format.isVideoStabilizationModeSupported(requested) ? requested : .off

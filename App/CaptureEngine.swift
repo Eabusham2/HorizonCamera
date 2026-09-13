@@ -159,7 +159,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                     configuration = settings
                     frameQueue.sync { [self] in processor.configure(settings, front: device.position == .front, horizontalFOVDegrees: Double(device.activeFormat.videoFieldOfView)) }
                     if #available(iOS 18.0, *) {
-                        if old.actionStabilization != settings.actionStabilization || old.manualFocus != settings.manualFocus {
+                        if old.manualFocus != settings.manualFocus {
                             configureCameraControls(settings,device:device)
                         } else { syncCameraControlValues(settings) }
                     }
@@ -341,7 +341,8 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             let front=camera.position == .front
             let factor=front ? 1.0 : tan(Double(wideFOV) * .pi / 360) / tan(Double(camera.activeFormat.videoFieldOfView) * .pi / 360)
             let label=front ? "Front" : (abs(factor-factor.rounded()) < 0.12 ? String(format:"%.0f×",factor) : String(format:"%.1f×",factor))
-            return LensOption(id:camera.uniqueID,label:label,name:camera.localizedName,isFront:front,isVirtual:false,factor:max(0.5,factor))
+            let focalLengthMM = front ? 24 : max(1,Int((24.0 * factor).rounded()))
+            return LensOption(id:camera.uniqueID,label:label,name:camera.localizedName,isFront:front,isVirtual:false,factor:max(0.5,factor),focalLengthMM:focalLengthMM)
         }.sorted {
             if $0.isFront != $1.isFront { return !$0.isFront }
             return $0.factor < $1.factor
