@@ -7,7 +7,6 @@ import SwiftUI
     var body: some Scene {
         WindowGroup {
             CameraView(model: camera)
-                .preferredColorScheme(.dark)
                 .task { if !runningTests { await camera.start() } }
                 .onChange(of: phase) { _, phase in
                     guard !runningTests else { return }

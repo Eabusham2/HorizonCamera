@@ -288,9 +288,11 @@ final class PipelineTests: XCTestCase {
         let image = pattern(width:320,height:240)
         let encoded = try XCTUnwrap(CaptureMetadata.encodeProcessed(image,renderer:renderer,efficient:false,settings:settings))
         let source = try XCTUnwrap(CGImageSourceCreateWithData(encoded.0 as CFData,nil))
-        let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source,0,nil) as? [String:Any])
-        let tiff = try XCTUnwrap(properties[kCGImagePropertyTIFFDictionary as String] as? [String:Any])
-        XCTAssertEqual(tiff[kCGImagePropertyTIFFArtist as String] as? String,"Horizon Tester")
+        let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source,0,nil) as? NSDictionary)
+        let tiff = try XCTUnwrap(properties[kCGImagePropertyTIFFDictionary] as? NSDictionary)
+        XCTAssertEqual(tiff[kCGImagePropertyTIFFArtist] as? String,"Horizon Tester")
+        let iptc = try XCTUnwrap(properties[kCGImagePropertyIPTCDictionary] as? NSDictionary)
+        XCTAssertEqual(iptc[kCGImagePropertyIPTCObjectName] as? String,"Locked frame")
     }
 
     func testPhotographicStyleApproximationChangesSavedPixelsDeterministically() throws {

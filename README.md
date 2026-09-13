@@ -91,8 +91,8 @@ AVFoundation requires long pipeline reconfiguration for depth and semantic matte
 | Apple ProRes 422 LT | ✅ Native movie path when available |
 | Apple ProRes 422 | ✅ Native movie path when available |
 | Apple ProRes 422 HQ | ✅ Native movie path when available |
-| Apple ProRes RAW / RAW HQ | ✅ Public codec choices on iOS/Xcode versions that expose them, capability-gated against active capture formats/output codecs; unsupported combinations stay gray and recording fails closed rather than falling back |
-| ProRes RAW Open Gate / 17:9 | ✅ Capability-gated frame-size choices; physical iPhone storage/throughput requirements still require device validation |
+| Apple ProRes RAW / RAW HQ | ✅ Public codec choices on iOS/Xcode versions that expose them, capability-gated against active capture formats/output codecs; unsupported combinations stay gray and recording fails closed rather than falling back. Apple requires external storage for ProRes RAW capture on supported iPhones. |
+| ProRes RAW Open Gate / 17:9 | ✅ Capability-gated frame-size choices. The external-storage requirement is retained because Apple requires it for ProRes RAW; ordinary ProRes can use internal storage where Apple supports that size/rate combination. |
 | SDR / Rec.709 | ✅ Custom writer renders in Rec.709 and tags output consistently |
 | HDR / HLG | ✅ Capability-gated native color-space/HDR path |
 | Dolby Vision 8.4 / HLG | ✅ Capability-gated native profile requests HEVC Main10 + Rec.2020 HLG and automatic HDR metadata insertion when the output supports those settings; physical-device bitstream/playback validation still applies |
@@ -106,7 +106,7 @@ AVFoundation requires long pipeline reconfiguration for depth and semantic matte
 | Still during video | ✅ Separate recording-time still button writes the current saved video frame at video resolution without stopping the recording |
 | QuickTake-style recording | ✅ Long-press Photo shutter starts video from the live session; lock keeps it recording after release |
 
-**ProRes RAW note:** the public SDK exposes ProRes RAW / RAW HQ codec identifiers and supported iPhones may impose external-storage/throughput requirements. HorizonCamera capability-gates the choices and fails closed if the active native movie output cannot provide the requested codec. Simulator CI cannot certify a phone/storage combination.
+**ProRes RAW note:** Apple requires external storage for ProRes RAW capture on supported iPhones. HorizonCamera does not impose an extra storage rule on formats where Apple allows internal recording. Codec/format choices remain capability-gated and fail closed rather than silently falling back.
 
 **Dolby Vision note:** HorizonCamera now has a separate Dolby Vision 8.4 / HLG-compatible public-API path. It requests HEVC Main10, Rec.2020 HLG and automatic HDR metadata insertion where supported. It still does **not** claim Apple's private Camera tone mapping, ISP decisions, or identical stock-Camera look.
 
@@ -161,6 +161,8 @@ Location metadata is **off by default**. If you enable it, HorizonCamera request
 - Controls remain portrait-oriented while the camera image may roll for Horizon Lock.
 - Persistent settings survive relaunch, while the **live zoom always starts at 1×** so a previous zoom/framing position cannot surprise you.
 - Active-app **Camera Control** support on iOS 18+: a full press triggers the current shutter/record action, while light-press/slide controls expose HorizonCamera Zoom, native exposure bias, Manual Focus, and Action strength when Action Stabilization is enabled. These controls are attached to the live `AVCaptureSession`, not decorative UI.
+
+- App chrome follows the iPhone’s current Light/Dark appearance automatically; the camera viewfinder itself stays a neutral black capture canvas. There is no fake chassis/case-color theme.
 
 ## Approximation boundary — what is still not Apple-identical
 
