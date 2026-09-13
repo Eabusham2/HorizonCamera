@@ -80,7 +80,6 @@ struct CameraSettingsView: View {
                     ForEach(model.capabilities.supportedStabilizationModes) { Text($0.rawValue).tag($0) }
                 }.disabled(model.settings.horizonLock || model.settings.zoomLock || model.settings.actionStabilization)
             }
-            Toggle("Mini full-lens overview", isOn:model.binding(\.showOverview))
             Button("Reset crop and tracking") { model.resetFraming() }
             Text("Horizon Lock, Zoom Lock and Action Stabilization affect saved output. Action can layer HorizonCamera's gyro/crop correction over the strongest public native stabilization the active format supports. Native Cinematic, Spatial, ProRes/Log and multichannel recording keep AVFoundation's native movie pipeline, so incompatible custom transforms are disabled rather than shown as fake effects.")
                 .font(.caption).foregroundStyle(.secondary)

@@ -65,7 +65,7 @@ enum MediaFiles {
         items.insert(item, at: 0)
         persist()
         if saveToPhotos { await exportToPhotos(item) }
-        else { message = "Saved in the app library." }
+        else { message = nil }
     }
     func exportToPhotos(_ item: MediaItem) async {
         if item.savedToPhotos { message = "This capture is already saved to Photos."; return }
@@ -88,7 +88,7 @@ enum MediaFiles {
                 }
             }
             if let index = items.firstIndex(where: { $0.id == item.id }) { items[index].savedToPhotos = true }
-            persist(); message = "Saved to Photos and the app library."
+            persist(); message = nil
         } catch { message = "Saved in the app, but Photos export failed: \(error.localizedDescription)" }
     }
     func deleteLocal(_ item: MediaItem) {
@@ -97,7 +97,7 @@ enum MediaFiles {
                 if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
             }
             items.removeAll { $0.id == item.id }; persist()
-            message = "Deleted the local copy. Photos was not changed."
+            message = nil
         } catch { message = error.localizedDescription }
     }
     private func persist() {

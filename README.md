@@ -152,8 +152,9 @@ Location metadata is **off by default**. If you enable it, HorizonCamera request
 - iOS 26 Smart Framing monitor: applies the device's recommended dynamic aspect ratio and zoom when supported.
 - iOS 26 lens-cleaning hints/status using AVFoundation's camera-lens-smudge detector.
 - Main-screen output-aspect menu: 9:16, 16:9, 1:1, 3:4, 4:3, 2:3, 3:2, 4:5, 5:4, 1.85:1 and 2.39:1. Unsupported native combinations stay gray.
-- Optional corner **mini overview**: shows the uncropped active lens, while a yellow polygon derived from the real `CropPlan.outputToSource` transform marks exactly what the selected output aspect/crop will save. With Zoom Lock off the persistent crop recenters; with Zoom Lock on the frame floats, sticks at source edges, and regains travel on reversal.
+- Optional corner **mini overview** (off by default): shows the uncropped active physical lens (ultra-wide at 0.5×, main camera on the 1× path). The yellow capture outline uses the selected real output aspect/crop; with Zoom Lock off it recenters after a point-anchored zoom transition, with Zoom Lock on it floats, sticks at source edges, and regains travel on reversal. With Horizon Lock on, the full lens view can roll underneath while the yellow output frame stays level.
 - Main stabilization panel is four independent ticks: **Horizon / Zoom Lock / Action / Smart**. Smart is on by default and adds gentler Super-Steady-style output stabilization plus anti-artifact headroom; Action uses the stronger fixed profile.
+- The zoom rail is intentionally compact and transparent, with real physical-lens snap dots instead of separate lens preset buttons/duplicate Auto entries.
 - Pinch-to-point zoom: without Zoom Lock, the point under your fingers remains anchored during the zoom transition, then normal framing recenters.
 - Floating-frame Zoom Lock reports `Locked` / `Edge`; it is not dependent on Vision recognizing a subject. Its crop window moves inside the full source until it reaches an edge, then regains travel immediately when direction reverses.
 - Optional compact wide sensor-view inset, off by default.
@@ -166,6 +167,8 @@ Location metadata is **off by default**. If you enable it, HorizonCamera request
 - Active-app **Camera Control** support on iOS 18+: a full press triggers the current shutter/record action, while light-press/slide controls expose HorizonCamera Zoom, native exposure bias, and Manual Focus. These controls are attached to the live `AVCaptureSession`, not decorative UI.
 
 - App chrome follows the iPhone’s current Light/Dark appearance automatically; the camera viewfinder itself stays a neutral black capture canvas. There is no fake chassis/case-color theme.
+- First-run permission flow attempts Camera, Microphone, Photos add-only, Location, and Motion sequentially. Location metadata remains off by default even when permission is granted.
+- Routine successful saves/deletes are silent; the library only surfaces messages when the user needs to know about a denial or failure. Videos auto-start when opened in the local gallery.
 
 ## Approximation boundary — what is still not Apple-identical
 

@@ -176,8 +176,8 @@ struct CameraView: View {
                             if model.settings.aeafLock { Text("AE/AF LOCK").font(.caption2.bold()).foregroundStyle(.yellow) }
                             Spacer()
                             if model.settings.showOverview {
-                                OverviewView(feed:feed,renderer:renderer)
-                                    .frame(width:92,height:126).clipShape(RoundedRectangle(cornerRadius:9))
+                                OverviewView(feed:feed,renderer:renderer,keepLevel:model.settings.horizonLock)
+                                    .frame(width:88,height:118).clipShape(RoundedRectangle(cornerRadius:9))
                                     .overlay(RoundedRectangle(cornerRadius:9).stroke(.white.opacity(0.45),lineWidth:0.8))
                             }
                         }
@@ -192,7 +192,7 @@ struct CameraView: View {
                                 .accessibilityLabel("Live Text")
                             }
                         }
-                        ZoomRail(model:model).frame(height:34).padding(.top,6)
+                        ZoomRail(model:model).frame(height:26).padding(.top,3)
                     }.padding(8)
                 }
                 if showLiveTextPanel && model.settings.showDetectedText && !model.detectedText.isEmpty {
@@ -410,16 +410,16 @@ private struct ZoomRail: View {
                 ForEach(model.zoomDots,id:\.self) { dot in
                     let f=(log2(max(dot,0.01))-lo)/max(0.001,hi-lo)
                     Circle().fill(abs(model.displayZoom-dot)<0.07 ? Color.yellow:Color.white.opacity(0.72))
-                        .frame(width:5,height:5).position(x:8+CGFloat(f)*max(1,geometry.size.width-60),y:geometry.size.height/2)
+                        .frame(width:4,height:4).position(x:6+CGFloat(f)*max(1,geometry.size.width-56),y:geometry.size.height/2)
                 }
                 HStack(spacing:6) {
                     Slider(value:Binding(get:{log2(max(model.displayZoom,0.01))},set:{model.setDisplayZoom(pow(2,$0))}),in:lo...hi)
-                        .tint(.white.opacity(0.70))
+                        .tint(.white.opacity(0.62))
                     Text(String(format:"%.1f×",model.displayZoom)).font(.caption2.monospacedDigit()).frame(width:38,alignment:.trailing)
                 }
             }
         }
-        .background(Color.black.opacity(0.16),in:Capsule())
+        .background(Color.clear)
     }
 }
 
@@ -441,8 +441,19 @@ struct OverviewGeometry {
         let width = min(size.width,size.height*ratio), height = width/ratio
         return CGRect(x:(size.width-width)/2,y:(size.height-height)/2,width:width,height:height)
     }
-    static func capturePoints(plan: CropPlan, in size: CGSize) -> [CGPoint] {
+    static func capturePoints(plan: CropPlan, in size: CGSize, keepLevel: Bool = false) -> [CGPoint] {
         let rect=imageRect(source:plan.source,in:size)
+        if keepLevel {
+            let detail=plan.sourceDetail
+            let center=CGPoint(x:rect.minX+plan.center.x/plan.source.width*rect.width,
+                               y:rect.minY+(1-plan.center.y/plan.source.height)*rect.height)
+            let width=detail.width/plan.source.width*rect.width
+            let height=detail.height/plan.source.height*rect.height
+            return [CGPoint(x:center.x-width/2,y:center.y-height/2),
+                    CGPoint(x:center.x+width/2,y:center.y-height/2),
+                    CGPoint(x:center.x+width/2,y:center.y+height/2),
+                    CGPoint(x:center.x-width/2,y:center.y+height/2)]
+        }
         let corners=[Point2(0,0),Point2(plan.output.width,0),Point2(plan.output.width,plan.output.height),Point2(0,plan.output.height)]
         return corners.map { corner in
             let q=plan.outputToSource(corner)
@@ -455,12 +466,13 @@ struct OverviewGeometry {
 struct OverviewView: View {
     let feed: PreviewFeed
     let renderer: ImageRenderer
+    let keepLevel: Bool
     var body: some View {
         ZStack {
             MetalPreview(feed:feed,renderer:renderer,overview:true)
             Canvas { context,size in
                 guard let frame=feed.snapshot() else { return }
-                let points=OverviewGeometry.capturePoints(plan:frame.plan,in:size)
+                let points=OverviewGeometry.capturePoints(plan:frame.plan,in:size,keepLevel:keepLevel)
                 guard let first=points.first else { return }
                 var path=Path(); path.move(to:first)
                 for point in points.dropFirst() { path.addLine(to:point) }

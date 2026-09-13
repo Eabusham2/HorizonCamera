@@ -138,17 +138,17 @@ import Photos
         let video = AVCaptureDevice.authorizationStatus(for:.video)
         var allowed = video == .authorized
         if video == .notDetermined { allowed = await AVCaptureDevice.requestAccess(for:.video) }
-        guard allowed else { permissionDenied = true; error = "Allow Camera access in Settings to use HorizonCamera."; return }
-        permissionDenied = false
         var microphone = AVCaptureDevice.authorizationStatus(for:.audio) == .authorized
         if AVCaptureDevice.authorizationStatus(for:.audio) == .notDetermined { microphone = await AVCaptureDevice.requestAccess(for:.audio) }
-        if settings.audio && !microphone { settings.audio = false }
         if !requestedStartupPermissions {
             requestedStartupPermissions = true
             if PHPhotoLibrary.authorizationStatus(for:.addOnly) == .notDetermined { _ = await PHPhotoLibrary.requestAuthorization(for:.addOnly) }
             await CaptureLocation.shared.requestAuthorizationOnly()
             engine.motion.requestAuthorizationIfNeeded()
         }
+        guard allowed else { permissionDenied = true; error = "Allow Camera access in Settings to use HorizonCamera."; return }
+        permissionDenied = false
+        if settings.audio && !microphone { settings.audio = false }
         guard UIApplication.shared.applicationState == .active else { return }
         if settings.includeLocationMetadata { CaptureLocation.shared.request() }
         engine.start(settings:settings,microphoneAllowed:microphone)

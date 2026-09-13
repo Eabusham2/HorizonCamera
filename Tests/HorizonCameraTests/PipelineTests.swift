@@ -420,6 +420,19 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(actual.x,expected.x,accuracy:0.5); XCTAssertEqual(actual.y,expected.y,accuracy:0.5)
     }
 
+    func testHorizonMiniOverviewKeepsOutputFrameLevelWhileSourceRolls() throws {
+        let output=Framing.landscape.size(longEdge:1000)
+        let plan=try CropGeometry.plan(source:Size2(4000,3000),output:output,angle:0.72,zoom:1.8,fullTurn:true,reserve:0.97,
+            requestedCenter:Point2(2100,1450))
+        let points=OverviewGeometry.capturePoints(plan:plan,in:CGSize(width:240,height:180),keepLevel:true)
+        XCTAssertEqual(points[0].y,points[1].y,accuracy:0.001)
+        XCTAssertEqual(points[2].y,points[3].y,accuracy:0.001)
+        XCTAssertEqual(points[0].x,points[3].x,accuracy:0.001)
+        XCTAssertEqual(points[1].x,points[2].x,accuracy:0.001)
+        let width=abs(points[1].x-points[0].x), height=abs(points[3].y-points[0].y)
+        XCTAssertEqual(Double(width/height),output.width/output.height,accuracy:0.01)
+    }
+
     func testSmartSteadyChangesRecordingPlanWithoutWarpingPreview() throws {
         let renderer=try makeRenderer(), motion=MotionService(), processor=FrameProcessor(motion:motion,renderer:renderer)
         var settings=CameraSettings(); settings.mode = .video; settings.horizonLock=false; settings.zoomLock=false; settings.actionStabilization=false; settings.smartArtifactGuard=true; settings.videoFraming = .landscape; settings.resolution = .hd
