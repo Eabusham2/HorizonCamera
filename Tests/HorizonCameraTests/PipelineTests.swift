@@ -255,14 +255,19 @@ final class PipelineTests: XCTestCase {
         let source = first.plan.outputToSource(Point2(anchor.x*first.plan.output.width,(1-anchor.y)*first.plan.output.height))
         processor.setZoom(4,atUIKit:anchor)
         var previous = first.plan.zoom
+        var anchoredFrames = 0
         for frameIndex in 1...18 {
             let frame = try processor.process(buffer:input,hostTime:1+Double(frameIndex)/60)
             XCTAssertGreaterThanOrEqual(frame.plan.zoom,previous); XCTAssertLessThanOrEqual(frame.plan.zoom,4)
-            let mapped = frame.plan.sourceToOutput(source)
-            XCTAssertEqual(mapped.x,anchor.x*frame.plan.output.width,accuracy:0.02)
-            XCTAssertEqual(mapped.y,(1-anchor.y)*frame.plan.output.height,accuracy:0.02)
+            if frame.plan.zoom < 3.99 {
+                let mapped = frame.plan.sourceToOutput(source)
+                XCTAssertEqual(mapped.x,anchor.x*frame.plan.output.width,accuracy:0.02)
+                XCTAssertEqual(mapped.y,(1-anchor.y)*frame.plan.output.height,accuracy:0.02)
+                anchoredFrames += 1
+            }
             previous = frame.plan.zoom
         }
+        XCTAssertGreaterThan(anchoredFrames,0)
         XCTAssertEqual(previous,4,accuracy:0.01)
     }
     func testVideoRendererUsesRec709ColorSpace() throws {

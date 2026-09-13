@@ -319,6 +319,12 @@ final class FrameProcessor {
                 zoom:renderedZoom,fullTurn:settings.horizonLock,reserve:settings.previewReserve,
                 requestedCenter:Point2(manualCenter.x*size.width,manualCenter.y*size.height))
         }
+        if !settings.zoomLock && zoomAnchor == nil && (abs(manualCenter.x-0.5) > 0.0001 || abs(manualCenter.y-0.5) > 0.0001) {
+            manualCenter = Point2(0.5,0.5)
+            previewPlan = try CropGeometry.plan(source:size,output:settings.outputSize,angle:previewAngle,
+                zoom:renderedZoom,fullTurn:settings.horizonLock,reserve:settings.previewReserve,
+                requestedCenter:Point2(size.width/2,size.height/2))
+        }
 
         if let target=pendingTarget {
             if settings.zoomLock {
