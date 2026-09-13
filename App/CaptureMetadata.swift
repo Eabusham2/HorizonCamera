@@ -41,13 +41,52 @@ enum CaptureMetadata {
         let data = NSMutableData()
         let type = efficient ? UTType.heic.identifier : UTType.jpeg.identifier
         guard let destination = CGImageDestinationCreateWithData(data, type as CFString, 1, nil) else { return nil }
-        var base: [String:Any] = [:]
-        if let sourceData, let source = CGImageSourceCreateWithData(sourceData as CFData,nil),
-           let properties = CGImageSourceCopyPropertiesAtIndex(source,0,nil) as? [String:Any] { base = properties }
-        let properties=photo(settings,base:base)
-        if !properties.isEmpty { CGImageDestinationSetProperties(destination,properties as CFDictionary) }
-        let encodeOptions:[String:Any]=[kCGImageDestinationLossyCompressionQuality as String:efficient ? 0.98 : 0.96]
-        CGImageDestinationAddImage(destination,cg,encodeOptions as CFDictionary)
+
+        let metadata: CGMutableImageMetadata
+        if let sourceData,
+           let source = CGImageSourceCreateWithData(sourceData as CFData,nil),
+           let sourceMetadata = CGImageSourceCopyMetadataAtIndex(source,0,nil),
+           let copy = CGImageMetadataCreateMutableCopy(sourceMetadata) {
+            metadata = copy
+        } else {
+            metadata = CGImageMetadataCreateMutable()
+        }
+        func set(_ dictionary: CFString, _ property: CFString, _ value: Any) {
+            _ = CGImageMetadataSetValueMatchingImageProperty(metadata,dictionary,property,value as AnyObject)
+        }
+        if settings.customMetadataEnabled {
+            set(kCGImagePropertyTIFFDictionary,kCGImagePropertyTIFFSoftware,"HorizonCamera")
+            if !settings.metadataAuthor.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
+                set(kCGImagePropertyTIFFDictionary,kCGImagePropertyTIFFArtist,settings.metadataAuthor)
+                set(kCGImagePropertyIPTCDictionary,kCGImagePropertyIPTCByline,settings.metadataAuthor)
+            }
+            if !settings.metadataCopyright.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
+                set(kCGImagePropertyTIFFDictionary,kCGImagePropertyTIFFCopyright,settings.metadataCopyright)
+                set(kCGImagePropertyIPTCDictionary,kCGImagePropertyIPTCCopyrightNotice,settings.metadataCopyright)
+            }
+            let description = settings.metadataDescription.isEmpty ? settings.metadataTitle : settings.metadataDescription
+            if !description.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
+                set(kCGImagePropertyTIFFDictionary,kCGImagePropertyTIFFImageDescription,description)
+            }
+            if !settings.metadataTitle.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
+                set(kCGImagePropertyIPTCDictionary,kCGImagePropertyIPTCObjectName,settings.metadataTitle)
+            }
+            if !settings.metadataDescription.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
+                set(kCGImagePropertyIPTCDictionary,kCGImagePropertyIPTCCaptionAbstract,settings.metadataDescription)
+            }
+            let keywords = settings.metadataKeywords.split(separator:",").map { $0.trimmingCharacters(in:.whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            if !keywords.isEmpty { set(kCGImagePropertyIPTCDictionary,kCGImagePropertyIPTCKeywords,keywords as NSArray) }
+        }
+        if settings.includeLocationMetadata, let location = CaptureLocation.shared.current() {
+            for (key,value) in CaptureLocation.gpsDictionary(location) {
+                set(kCGImagePropertyGPSDictionary,key as CFString,value)
+            }
+        }
+        let options: [String:Any] = [
+            kCGImageDestinationLossyCompressionQuality as String: efficient ? 0.98 : 0.96,
+            kCGImageDestinationOrientation as String: 1
+        ]
+        CGImageDestinationAddImageAndMetadata(destination,cg,metadata,options as CFDictionary)
         if let depthData {
             var type: NSString?
             if let dictionary = depthData.dictionaryRepresentation(forAuxiliaryDataType:&type), let type {
