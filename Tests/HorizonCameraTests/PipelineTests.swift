@@ -288,11 +288,13 @@ final class PipelineTests: XCTestCase {
         let image = pattern(width:320,height:240)
         let encoded = try XCTUnwrap(CaptureMetadata.encodeProcessed(image,renderer:renderer,efficient:false,settings:settings))
         let source = try XCTUnwrap(CGImageSourceCreateWithData(encoded.0 as CFData,nil))
-        let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source,0,nil) as? NSDictionary)
-        let tiff = try XCTUnwrap(properties[kCGImagePropertyTIFFDictionary] as? NSDictionary)
-        XCTAssertEqual(tiff[kCGImagePropertyTIFFArtist] as? String,"Horizon Tester")
-        let iptc = try XCTUnwrap(properties[kCGImagePropertyIPTCDictionary] as? NSDictionary)
-        XCTAssertEqual(iptc[kCGImagePropertyIPTCObjectName] as? String,"Locked frame")
+        let metadata = try XCTUnwrap(CGImageSourceCopyMetadataAtIndex(source,0,nil))
+        let artistTag = try XCTUnwrap(CGImageMetadataCopyTagMatchingImageProperty(
+            metadata,kCGImagePropertyTIFFDictionary,kCGImagePropertyTIFFArtist))
+        XCTAssertEqual(CGImageMetadataTagCopyValue(artistTag) as? String,"Horizon Tester")
+        let titleTag = try XCTUnwrap(CGImageMetadataCopyTagMatchingImageProperty(
+            metadata,kCGImagePropertyIPTCDictionary,kCGImagePropertyIPTCObjectName))
+        XCTAssertEqual(CGImageMetadataTagCopyValue(titleTag) as? String,"Locked frame")
     }
 
     func testPhotographicStyleApproximationChangesSavedPixelsDeterministically() throws {
