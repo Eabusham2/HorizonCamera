@@ -376,7 +376,6 @@ struct CameraSettings: Codable, Equatable {
             filter = .original
             raw = false
             livePhoto = false
-            photoFraming = .classic
         }
         if constantColor {
             raw = false

@@ -526,8 +526,13 @@ struct CameraView: View {
     }
     private func resolutionUnavailableReason(_ resolution:Resolution) -> String? {
         if model.resolutionAvailable(resolution) { return nil }
-        if model.settings.codec.isProResRAW { return resolution.isRAWFrameSize ? "not supported by this camera" : "RAW uses sensor frame sizes" }
+        if model.settings.codec.isProResRAW { return resolution.isRAWFrameSize ? "not supported by this camera at the selected fps" : "RAW uses sensor frame sizes" }
         if resolution.isRAWFrameSize { return "requires ProRes RAW" }
+        if resolution == .action2_8K && !model.settings.actionStabilization { return "available when Action is on" }
+        if model.capabilities.supportedResolutions.contains(resolution),
+           let rates=model.capabilities.supportedFPSByResolution[resolution], !rates.isEmpty {
+            return "not available at \(FrameRateCatalog.label(model.settings.captureFPS)) fps"
+        }
         return model.isFrontCamera ? "not supported by the front camera" : "not supported by the active rear camera/format"
     }
     private func frameRateUnavailableReason(_ rate:Double) -> String? {

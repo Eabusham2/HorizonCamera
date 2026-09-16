@@ -39,12 +39,12 @@ final class AdvancedCameraTests: XCTestCase {
     }
     func testPortraitModeForcesNativeDepthSafeSettings() {
         var s = CameraSettings(); let old = s
-        s.mode = .portrait; s.horizonLock = true; s.zoomLock = true; s.raw = true; s.livePhoto = true; s.filter = .vivid
+        s.mode = .portrait; s.horizonLock = true; s.zoomLock = true; s.raw = true; s.livePhoto = true; s.filter = .vivid; s.photoFraming = .square
         s.normalize(changedFrom: old)
         XCTAssertTrue(s.mode.isPhotoMode); XCTAssertFalse(s.mode.isMovie)
         XCTAssertTrue(s.depthData); XCTAssertTrue(s.portraitEffectsMatte)
         XCTAssertTrue(s.horizonLock); XCTAssertTrue(s.zoomLock); XCTAssertFalse(s.raw); XCTAssertFalse(s.livePhoto)
-        XCTAssertEqual(s.filter,.original); XCTAssertEqual(s.photoFraming,.classic)
+        XCTAssertEqual(s.filter,.original); XCTAssertEqual(s.photoFraming,.square)
     }
     func testConstantColorForcesCompatibleFlashAndDisablesRawLive() {
         var s = CameraSettings(); s.mode = .photo; s.horizonLock = false

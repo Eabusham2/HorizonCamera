@@ -244,13 +244,15 @@ import Photos
     }
     func resolutionAvailable(_ resolution: Resolution) -> Bool {
         if settings.codec.isProResRAW {
-            guard resolution.isRAWFrameSize else { return false }
-            return capabilities.supportedResolutions.contains(resolution)
+            guard resolution.isRAWFrameSize, capabilities.supportedResolutions.contains(resolution) else { return false }
+        } else {
+            if resolution.isRAWFrameSize { return false }
+            if resolution == .action2_8K && !settings.actionStabilization { return false }
+            guard capabilities.supportedResolutions.contains(resolution) else { return false }
         }
-        if resolution.isRAWFrameSize { return false }
-        if resolution == .action2_8K { return settings.actionStabilization && capabilities.supportedResolutions.contains(resolution) }
-        if settings.actionStabilization && resolution == .ultraHD { return false }
-        return capabilities.supportedResolutions.contains(resolution)
+        if let rates=capabilities.supportedFPSByResolution[resolution], !rates.isEmpty,
+           !rates.contains(where:{abs($0-settings.captureFPS)<0.02}) { return false }
+        return true
     }
     func frameRateAvailable(_ rate: Double) -> Bool {
         guard let rates=capabilities.supportedFPSByResolution[settings.resolution], rates.contains(where:{abs($0-rate)<0.02}) else { return false }
