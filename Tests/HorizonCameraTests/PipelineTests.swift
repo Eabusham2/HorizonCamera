@@ -444,6 +444,7 @@ final class PipelineTests: XCTestCase {
         let renderer=try makeRenderer(), motion=MotionService(), processor=FrameProcessor(motion:motion,renderer:renderer)
         var settings=CameraSettings(); settings.mode = .video; settings.horizonLock=false; settings.zoomLock=false; settings.actionStabilization=false; settings.smartArtifactGuard=true; settings.videoFraming = .landscape; settings.resolution = .hd
         processor.configure(settings,front:false,horizontalFOVDegrees:70)
+        processor.beginRecording(); defer { processor.endRecording() }
         let input=try buffer(pattern(width:1280,height:720),renderer:renderer)
         motion.injectForTesting(MotionReading(time:1,gx:1,gy:0,gz:0,rateZ:0,rateX:0,rateY:0)); _=try processor.process(buffer:input,hostTime:1)
         motion.injectForTesting(MotionReading(time:1.02,gx:1,gy:0,gz:0,rateZ:0.15,rateX:1.4,rateY:1.8))
@@ -457,6 +458,7 @@ final class PipelineTests: XCTestCase {
         let renderer=try makeRenderer(), motion=MotionService(), processor=FrameProcessor(motion:motion,renderer:renderer)
         var settings=CameraSettings(); settings.mode = .video; settings.horizonLock=false; settings.zoomLock=false; settings.actionStabilization=true; settings.videoFraming = .landscape; settings.resolution = .hd; settings.smartArtifactGuard=true
         processor.configure(settings,front:false,horizontalFOVDegrees:70)
+        processor.beginRecording(); defer { processor.endRecording() }
         let input=try buffer(pattern(width:1280,height:720),renderer:renderer)
         motion.injectForTesting(MotionReading(time:1,gx:1,gy:0,gz:0,rateZ:0,rateX:0,rateY:0))
         _=try processor.process(buffer:input,hostTime:1)
@@ -474,6 +476,7 @@ final class PipelineTests: XCTestCase {
         let renderer=try makeRenderer(), motion=MotionService(), processor=FrameProcessor(motion:motion,renderer:renderer)
         var settings=CameraSettings(); settings.mode = .video; settings.horizonLock=true; settings.smartArtifactGuard=true; settings.videoFraming = .landscape; settings.resolution = .hd
         processor.configure(settings,front:false,horizontalFOVDegrees:70)
+        processor.beginRecording(); defer { processor.endRecording() }
         let input=try buffer(pattern(width:1280,height:720),renderer:renderer)
         motion.injectForTesting(MotionReading(time:2,gx:0.3,gy:-0.95,gz:0,rateZ:0,rateX:0,rateY:0))
         let frame=try processor.process(buffer:input,hostTime:2)
