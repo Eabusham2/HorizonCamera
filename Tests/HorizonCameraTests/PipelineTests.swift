@@ -300,6 +300,102 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(properties[kCGImagePropertyPixelHeight] as? Int,240)
     }
 
+    func testProcessedPhotoCustomMetadataRoundTripsInJPEGAndHEIC() throws {
+        let renderer = try makeRenderer()
+        var settings = CameraSettings()
+        settings.customMetadataEnabled = true
+        settings.includeLocationMetadata = false
+        settings.metadataTitle = "Locked frame"
+        settings.metadataAuthor = "Horizon Tester"
+        settings.metadataCopyright = "Test Copyright"
+        settings.metadataDescription = "Processed photo description"
+        settings.metadataKeywords = "camera, horizon"
+        for efficient in [false,true] {
+            let encoded = try XCTUnwrap(CaptureMetadata.encodeProcessed(pattern(width:320,height:240),
+                renderer:renderer,efficient:efficient,settings:settings))
+            XCTAssertEqual(encoded.1,efficient ? "heic" : "jpg")
+            let source = try XCTUnwrap(CGImageSourceCreateWithData(encoded.0 as CFData,nil))
+            let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source,0,nil) as? [String:Any])
+            let tiff = try XCTUnwrap(properties[kCGImagePropertyTIFFDictionary as String] as? [String:Any],encoded.1)
+            XCTAssertEqual(tiff[kCGImagePropertyTIFFArtist as String] as? String,settings.metadataAuthor,encoded.1)
+            XCTAssertEqual(tiff[kCGImagePropertyTIFFCopyright as String] as? String,settings.metadataCopyright,encoded.1)
+            XCTAssertEqual(tiff[kCGImagePropertyTIFFImageDescription as String] as? String,settings.metadataDescription,encoded.1)
+            XCTAssertEqual(tiff[kCGImagePropertyTIFFSoftware as String] as? String,"HorizonCamera",encoded.1)
+            let iptc = try XCTUnwrap(properties[kCGImagePropertyIPTCDictionary as String] as? [String:Any],encoded.1)
+            XCTAssertEqual(iptc[kCGImagePropertyIPTCObjectName as String] as? String,settings.metadataTitle,encoded.1)
+            XCTAssertEqual(iptc[kCGImagePropertyIPTCKeywords as String] as? [String],["camera","horizon"],encoded.1)
+        }
+    }
+
+    func testProcessedPhotoPreservesCameraMetadataAndUpdatesGeometry() throws {
+        let renderer = try makeRenderer()
+        let image = pattern(width:480,height:640)
+        let cg = try XCTUnwrap(renderer.context.createCGImage(image,from:image.extent,
+            format:.RGBA8,colorSpace:renderer.colorSpace))
+        let fixture = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(fixture,"public.jpeg" as CFString,1,nil))
+        let original: [String:Any] = [
+            kCGImagePropertyOrientation as String: 6,
+            kCGImagePropertyTIFFDictionary as String: [
+                kCGImagePropertyTIFFMake as String: "Fixture Camera",
+                kCGImagePropertyTIFFModel as String: "Fixture Sensor",
+                kCGImagePropertyTIFFSoftware as String: "Original camera software",
+                kCGImagePropertyTIFFOrientation as String: 6
+            ],
+            kCGImagePropertyExifDictionary as String: [
+                kCGImagePropertyExifExposureTime as String: 0.01,
+                kCGImagePropertyExifFNumber as String: 1.8,
+                kCGImagePropertyExifDateTimeOriginal as String: "2026:01:02 03:04:05",
+                kCGImagePropertyExifPixelXDimension as String: 480,
+                kCGImagePropertyExifPixelYDimension as String: 640
+            ],
+            kCGImagePropertyGPSDictionary as String: [
+                kCGImagePropertyGPSLatitude as String: 10.0,
+                kCGImagePropertyGPSLatitudeRef as String: "N",
+                kCGImagePropertyGPSLongitude as String: 20.0,
+                kCGImagePropertyGPSLongitudeRef as String: "E"
+            ]
+        ]
+        CGImageDestinationAddImage(destination,cg,original as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let fixtureData = fixture as Data
+        let fixtureSource = try XCTUnwrap(CGImageSourceCreateWithData(fixtureData as CFData,nil))
+        let fixtureProperties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(fixtureSource,0,nil) as? [String:Any])
+        XCTAssertEqual(fixtureProperties[kCGImagePropertyOrientation as String] as? Int,6)
+        XCTAssertNotNil(fixtureProperties[kCGImagePropertyGPSDictionary as String])
+
+        // Use different output dimensions so stale sensor-size tags cannot pass.
+        let output = image.cropped(to:CGRect(x:0,y:0,width:320,height:240))
+        for efficient in [false,true] {
+            for custom in [false,true] {
+                var settings = CameraSettings()
+                settings.customMetadataEnabled = custom
+                settings.includeLocationMetadata = false
+                settings.metadataAuthor = "New author"
+                let encoded = try XCTUnwrap(CaptureMetadata.encodeProcessed(output,renderer:renderer,
+                    efficient:efficient,settings:settings,sourceData:fixtureData))
+                let source = try XCTUnwrap(CGImageSourceCreateWithData(encoded.0 as CFData,nil))
+                let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source,0,nil) as? [String:Any])
+                XCTAssertEqual(properties[kCGImagePropertyPixelWidth as String] as? Int,320)
+                XCTAssertEqual(properties[kCGImagePropertyPixelHeight as String] as? Int,240)
+                XCTAssertEqual(properties[kCGImagePropertyOrientation as String] as? Int,1)
+                XCTAssertNil(properties[kCGImagePropertyGPSDictionary as String])
+                let tiff = try XCTUnwrap(properties[kCGImagePropertyTIFFDictionary as String] as? [String:Any])
+                XCTAssertEqual(tiff[kCGImagePropertyTIFFMake as String] as? String,"Fixture Camera")
+                XCTAssertEqual(tiff[kCGImagePropertyTIFFModel as String] as? String,"Fixture Sensor")
+                XCTAssertEqual(tiff[kCGImagePropertyTIFFSoftware as String] as? String,
+                    custom ? "HorizonCamera" : "Original camera software")
+                XCTAssertEqual(tiff[kCGImagePropertyTIFFArtist as String] as? String,custom ? "New author" : nil)
+                let exif = try XCTUnwrap(properties[kCGImagePropertyExifDictionary as String] as? [String:Any])
+                XCTAssertEqual(try XCTUnwrap(exif[kCGImagePropertyExifExposureTime as String] as? Double),0.01,accuracy:0.00001)
+                XCTAssertEqual(try XCTUnwrap(exif[kCGImagePropertyExifFNumber as String] as? Double),1.8,accuracy:0.001)
+                XCTAssertEqual(exif[kCGImagePropertyExifDateTimeOriginal as String] as? String,"2026:01:02 03:04:05")
+                XCTAssertEqual(exif[kCGImagePropertyExifPixelXDimension as String] as? Int,320)
+                XCTAssertEqual(exif[kCGImagePropertyExifPixelYDimension as String] as? Int,240)
+            }
+        }
+    }
+
     func testPhotographicStyleApproximationChangesSavedPixelsDeterministically() throws {
         let renderer=try makeRenderer(), image=pattern(width:320,height:240)
         var settings=CameraSettings(); settings.photographicStyle = .richContrast; settings.styleIntensity=1; settings.styleTone=0.2; settings.styleWarmth = -0.25

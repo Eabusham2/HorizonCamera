@@ -20,7 +20,7 @@ Horizon Lock uses timestamp-aligned Core Motion gravity/gyro data to counter-rot
 
 ### Zoom Lock
 
-Zoom Lock locks the **zoomed framing itself**, not a recognized subject. Core Motion pans the crop in the opposite direction inside the wider sensor image so the selected view stays fixed while you move the phone. When the crop reaches a real sensor edge it pins there and the framing begins following the phone; reverse direction and the crop immediately regains travel until the opposite edge. A tap while Zoom Lock is active re-centers the locked window on that point. The optional mini overview is off by default. When enabled it shows the uncropped active physical lens and overlays the actual output crop in yellow; at 0.5× the active source is the ultra-wide lens, while the normal 1× path uses the main camera.
+Zoom Lock locks the **zoomed framing itself**, not a recognized subject. Core Motion pans the crop in the opposite direction inside the wider sensor image so the selected view stays fixed while you move the phone. When the crop reaches a real sensor edge it pins there and the framing begins following the phone; reverse direction and the crop immediately regains travel until the opposite edge. A tap while Zoom Lock is active re-centers the locked window on that point. The mini overview is on by default and can be hidden. When enabled it shows the uncropped active physical lens and overlays the actual output crop in yellow; at 0.5× the active source is the ultra-wide lens, while the normal 1× path uses the main camera.
 
 Horizon and Zoom Lock are WYSIWYG: their preview uses the same live crop/level geometry that drives compatible custom output. **Action Stabilization** and **Smart** intentionally use a preview/output split: the live view stays responsive while the saved frame can use extra gyro correction and safety crop. Native Cinematic, Spatial, high-frame-rate, HDR/Log, ProRes and multichannel modes use AVFoundation's native movie path when required; incompatible custom transforms are disabled or grayed rather than faked.
 
@@ -139,9 +139,9 @@ Custom metadata is **off by default**. When enabled, HorizonCamera exposes edita
 
 With custom metadata disabled, native movies keep AVFoundation/camera metadata without HorizonCamera injecting title/author/software fields. When custom metadata is enabled, the requested QuickTime title/author/copyright/description/keywords/software fields are added. Native orientation/mirroring metadata remains AVFoundation-managed where supported.
 
-Native photos preserve AVFoundation camera metadata. **Processed Horizon/Zoom/filter photos copy the source ImageIO metadata before re-encoding** so the normal camera metadata path remains the default. Optional custom metadata remains off by default; native photo/movie fields are the authoritative custom-metadata path, while processed-file vendor/tag survival can vary by ImageIO destination/OS and is not allowed to block capture. Processed HEIC/JPEG uses high-quality encoding rather than a low-quality preview export.
+Native photos preserve AVFoundation camera metadata. **Processed Horizon/Zoom/filter photos copy the source ImageIO per-image camera/EXIF properties before re-encoding**, then merge optional custom TIFF/IPTC title, author, copyright, description and keywords only when custom metadata is enabled. The output metadata records upright orientation and the current cropped pixel dimensions. Processed JPEG/HEIC uses high-quality encoding. Release-gate tests decode the processed exports to verify supported camera fields and optional custom metadata.
 
-Location metadata is **off by default**. If you enable it, HorizonCamera requests When In Use location permission and embeds a recent fix using the standard ImageIO GPS dictionary for photos and ISO-6709 QuickTime metadata for movies. Diagnostics never include coordinates.
+Location metadata is **on by default**, independently of the custom metadata switch. HorizonCamera requests When In Use location permission at startup and embeds coordinates only when location metadata is enabled, permission has been granted, and a recent fix is available. Photos use the standard ImageIO GPS dictionary; movies use ISO-6709 QuickTime metadata. Diagnostics never include coordinates.
 
 ## Viewfinder and camera controls
 
@@ -152,12 +152,12 @@ Location metadata is **off by default**. If you enable it, HorizonCamera request
 - iOS 26 Smart Framing monitor: applies the device's recommended dynamic aspect ratio and zoom when supported.
 - iOS 26 lens-cleaning hints/status using AVFoundation's camera-lens-smudge detector.
 - Main-screen output-aspect menu: 9:16, 16:9, 1:1, 3:4, 4:3, 2:3, 3:2, 4:5, 5:4, 1.85:1 and 2.39:1. Unsupported native combinations stay gray.
-- Optional corner **mini overview** (off by default): shows the uncropped active physical lens (ultra-wide at 0.5×, main camera on the 1× path). The yellow capture outline uses the selected real output aspect/crop; with Zoom Lock off it recenters after a point-anchored zoom transition, with Zoom Lock on it floats, sticks at source edges, and regains travel on reversal. With Horizon Lock on, the full lens view can roll underneath while the yellow output frame stays level.
+- Corner **mini overview** (on by default; can be hidden): shows the uncropped active physical lens (ultra-wide at 0.5×, main camera on the 1× path). The yellow capture outline uses the selected real output aspect/crop; with Zoom Lock off it recenters after a point-anchored zoom transition, with Zoom Lock on it floats, sticks at source edges, and regains travel on reversal. With Horizon Lock on, the full lens view can roll underneath while the yellow output frame stays level.
 - Main stabilization panel is four independent ticks: **Horizon / Zoom Lock / Action / Smart**. Smart is on by default and adds gentler Super-Steady-style output stabilization plus anti-artifact headroom; Action uses the stronger fixed profile.
 - The zoom rail is intentionally compact and transparent, with real physical-lens snap dots instead of separate lens preset buttons/duplicate Auto entries.
 - Pinch-to-point zoom: without Zoom Lock, the point under your fingers remains anchored during the zoom transition, then normal framing recenters.
 - Floating-frame Zoom Lock reports `Locked` / `Edge`; it is not dependent on Vision recognizing a subject. Its crop window moves inside the full source until it reaches an edge, then regains travel immediately when direction reverses.
-- Optional compact wide sensor-view inset, off by default.
+- Statistics overlay is off by default and can be enabled independently of the mini overview.
 - Effective source-crop detail and upscaling warnings.
 - Front-camera mirroring control.
 - Flash / torch controls.
@@ -167,7 +167,6 @@ Location metadata is **off by default**. If you enable it, HorizonCamera request
 - Active-app **Camera Control** support on iOS 18+: a full press triggers the current shutter/record action, while light-press/slide controls expose HorizonCamera Zoom, native exposure bias, and Manual Focus. These controls are attached to the live `AVCaptureSession`, not decorative UI.
 
 - App chrome follows the iPhone’s current Light/Dark appearance automatically; the camera viewfinder itself stays a neutral black capture canvas. There is no fake chassis/case-color theme.
-- First-run permission flow attempts Camera, Microphone, Photos add-only, Location, and Motion sequentially. Location metadata remains off by default even when permission is granted.
 - Routine successful saves/deletes are silent; the library only surfaces messages when the user needs to know about a denial or failure. Videos auto-start when opened in the local gallery.
 
 ## Approximation boundary — what is still not Apple-identical
@@ -192,7 +191,9 @@ This distinction is deliberate: **implemented** means a real code/capture path e
 
 Captures are written to `Documents/Captures` first and indexed in a local manifest. If the app is interrupted after a file is created but before the index updates, unindexed JPEG/HEIC/DNG/MOV files are recovered on next launch.
 
-Saving to Apple Photos uses **add-only** authorization. Denied Photos access does not delete the local capture; Share/Files remain available. On first launch the app requests every permission it can legitimately use: **Camera, Microphone, Photos add-only, Location and Motion**. Granting Location does **not** enable location metadata; geotagging remains off until you explicitly turn it on. The app has no account/login requirement and does not upload captures.
+On first launch, the app requests **Camera, Microphone, Photos read/write, When In Use Location and Motion** permissions as needed. Saving captures to Apple Photos still uses **add-only** authorization. Denied Photos access does not delete the local capture; Share/Files remain available.
+
+Location metadata is on by default but requires granted location permission and a recent fix before coordinates can be embedded; custom title/author and other editable metadata fields remain off by default. The app has no account/login requirement and does not upload captures.
 
 ## Build and release gates
 

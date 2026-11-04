@@ -42,52 +42,31 @@ enum CaptureMetadata {
         let type = efficient ? UTType.heic.identifier : UTType.jpeg.identifier
         guard let destination = CGImageDestinationCreateWithData(data, type as CFString, 1, nil) else { return nil }
 
-        let metadata: CGMutableImageMetadata
-        if let sourceData,
-           let source = CGImageSourceCreateWithData(sourceData as CFData,nil),
-           let sourceMetadata = CGImageSourceCopyMetadataAtIndex(source,0,nil),
-           let copy = CGImageMetadataCreateMutableCopy(sourceMetadata) {
-            metadata = copy
-        } else {
-            metadata = CGImageMetadataCreateMutable()
+        var base: [String:Any] = [:]
+        if let sourceData, let source = CGImageSourceCreateWithData(sourceData as CFData,nil),
+           let properties = CGImageSourceCopyPropertiesAtIndex(source,0,nil) as? [String:Any] {
+            base = properties
         }
-        _ = CGImageMetadataRegisterNamespaceForPrefix(metadata,kCGImageMetadataNamespaceTIFF,kCGImageMetadataPrefixTIFF,nil)
-        _ = CGImageMetadataRegisterNamespaceForPrefix(metadata,kCGImageMetadataNamespacePhotoshop,kCGImageMetadataPrefixPhotoshop,nil)
-        _ = CGImageMetadataRegisterNamespaceForPrefix(metadata,kCGImageMetadataNamespaceDublinCore,kCGImageMetadataPrefixDublinCore,nil)
-        func setPath(_ path: String, _ value: CFTypeRef) {
-            _ = CGImageMetadataSetValueWithPath(metadata,nil,path as CFString,value)
+        // Write TIFF/EXIF/IPTC as properties of this image. Destination-wide
+        // properties and hand-written XMP aliases do not reliably preserve them.
+        var properties = photo(settings,base:base)
+        properties[kCGImageDestinationLossyCompressionQuality as String] = efficient ? 0.98 : 0.96
+        properties[kCGImagePropertyOrientation as String] = 1
+        properties[kCGImagePropertyPixelWidth as String] = cg.width
+        properties[kCGImagePropertyPixelHeight as String] = cg.height
+        // The rendered pixels are already upright and cropped; old sensor-size
+        // and orientation tags must not describe the new processed image.
+        var tiff = (properties[kCGImagePropertyTIFFDictionary as String] as? [String:Any]) ?? [:]
+        tiff[kCGImagePropertyTIFFOrientation as String] = 1
+        properties[kCGImagePropertyTIFFDictionary as String] = tiff
+        var exif = (properties[kCGImagePropertyExifDictionary as String] as? [String:Any]) ?? [:]
+        exif[kCGImagePropertyExifPixelXDimension as String] = cg.width
+        exif[kCGImagePropertyExifPixelYDimension as String] = cg.height
+        properties[kCGImagePropertyExifDictionary as String] = exif
+        if !settings.includeLocationMetadata {
+            properties.removeValue(forKey:kCGImagePropertyGPSDictionary as String)
         }
-        func setProperty(_ dictionary: CFString, _ property: CFString, _ value: Any) {
-            _ = CGImageMetadataSetValueMatchingImageProperty(metadata,dictionary,property,value as AnyObject)
-        }
-        if settings.customMetadataEnabled {
-            setPath("tiff:Software","HorizonCamera" as CFString)
-            if !settings.metadataAuthor.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
-                setPath("tiff:Artist",settings.metadataAuthor as CFString)
-            }
-            if !settings.metadataCopyright.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
-                setPath("tiff:Copyright",settings.metadataCopyright as CFString)
-            }
-            let description = settings.metadataDescription.isEmpty ? settings.metadataTitle : settings.metadataDescription
-            if !description.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
-                setPath("tiff:ImageDescription",description as CFString)
-            }
-            if !settings.metadataTitle.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
-                setPath("photoshop:Headline",settings.metadataTitle as CFString)
-            }
-            let keywords = settings.metadataKeywords.split(separator:",").map { $0.trimmingCharacters(in:.whitespacesAndNewlines) }.filter { !$0.isEmpty }
-            if !keywords.isEmpty { setPath("dc:subject",keywords as NSArray) }
-        }
-        if settings.includeLocationMetadata, let location = CaptureLocation.shared.current() {
-            for (key,value) in CaptureLocation.gpsDictionary(location) {
-                setProperty(kCGImagePropertyGPSDictionary,key as CFString,value)
-            }
-        }
-        let options: [String:Any] = [
-            kCGImageDestinationLossyCompressionQuality as String: efficient ? 0.98 : 0.96,
-            kCGImageDestinationOrientation as String: 1
-        ]
-        CGImageDestinationAddImageAndMetadata(destination,cg,metadata,options as CFDictionary)
+        CGImageDestinationAddImage(destination,cg,properties as CFDictionary)
         if let depthData {
             var type: NSString?
             if let dictionary = depthData.dictionaryRepresentation(forAuxiliaryDataType:&type), let type {
