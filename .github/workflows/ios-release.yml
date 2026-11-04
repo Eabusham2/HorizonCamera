@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: macos-26-intel
     timeout-minutes: 30
     permissions:
       contents: write
