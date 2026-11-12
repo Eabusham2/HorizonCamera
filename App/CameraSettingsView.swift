@@ -29,20 +29,34 @@ struct CameraSettingsView: View {
         Section("Smart") {
             Text("Smart stabilization is controlled from the main Horizon / Zoom Lock / Action / Smart panel. Lens correction and the camera-aware helpers below stay here.")
                 .font(.caption).foregroundStyle(.secondary)
+            if model.settings.actionStabilization {
+                Toggle("Native stabilization assist",isOn:model.binding(\.actionNativeAssist))
+                Text("Native Assist controls native camera stabilization while Action is on, preferring low latency when supported. Turn it off to use Action's own stabilization alone.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Toggle("Lens correction",isOn:model.binding(\.contentAwareDistortionCorrection))
-                .disabled(!model.capabilities.contentAwareDistortionCorrection)
+                .disabled(!model.capabilities.contentAwareDistortionCorrection || model.settings.raw)
+            if model.settings.raw {
+                Text("Lens correction is unavailable for RAW capture.").font(.caption).foregroundStyle(.secondary)
+            }
             Toggle("Virtual-device fusion",isOn:model.binding(\.virtualDeviceFusion))
                 .disabled(!model.capabilities.virtualDeviceFusion)
             Toggle("Sensor orientation compensation",isOn:model.binding(\.sensorOrientationCompensation))
                 .disabled(!model.capabilities.sensorOrientationCompensation || model.settings.raw)
             Toggle("Center Stage",isOn:model.binding(\.centerStage))
-                .disabled(!model.capabilities.centerStage || model.settings.depthData || model.settings.mode == .portrait)
+                .disabled(!model.capabilities.centerStage || model.settings.depthData || model.settings.mode == .portrait || model.settings.preservesNativePhotoOriginals)
             Toggle("Smart Framing",isOn:model.binding(\.smartFraming))
-                .disabled(!model.capabilities.smartFraming || model.settings.mode == .portrait)
+                .disabled(!model.capabilities.smartFraming || model.settings.mode == .portrait || model.settings.preservesNativePhotoOriginals)
+            if model.settings.preservesNativePhotoOriginals {
+                Text("RAW and Live Photo preserve native framing, so Center Stage and Smart Framing are unavailable.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Toggle("Lens cleaning hints",isOn:model.binding(\.lensCleaningHints))
                 .disabled(!model.capabilities.lensSmudgeDetection)
             if model.settings.mode.isMovie {
-                Text("Native stabilization is controlled from the main camera strip. Exposure compensation and AE/AF Lock are available in the camera controls tray.")
+                Text(model.settings.actionStabilization
+                     ? "Exposure compensation and AE/AF Lock are available in the camera controls tray."
+                     : "Native stabilization is controlled from the main camera strip. Exposure compensation and AE/AF Lock are available in the camera controls tray.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -56,11 +70,6 @@ struct CameraSettingsView: View {
                 .disabled(model.settings.usesNativeMoviePipeline || model.settings.mode == .portrait || model.settings.actionStabilization)
             Toggle("Action Stabilization", isOn:model.binding(\.actionStabilization))
                 .disabled(model.settings.mode != .video)
-            if model.settings.actionStabilization {
-                Toggle("Native stabilization assist",isOn:model.binding(\.actionNativeAssist))
-                Text("Action uses one fixed tuned profile plus the strongest supported public AVFoundation stabilization when Native Assist is enabled. There is no user strength slider.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
             if model.settings.mode.isMovie {
                 Picker("Apple stabilization", selection:model.binding(\.stabilization)) {
                     ForEach(model.capabilities.supportedStabilizationModes) { Text($0.rawValue).tag($0) }
@@ -77,7 +86,7 @@ struct CameraSettingsView: View {
             if model.settings.mode.isPhotoMode {
                 Picker("Photo framing", selection:model.binding(\.photoFraming)) {
                     ForEach(Framing.allCases) { Text($0.rawValue).tag($0) }
-                }.disabled(model.settings.mode == .portrait)
+                }.disabled(model.settings.mode == .portrait || model.settings.preservesNativePhotoOriginals)
             } else {
                 Picker("Video framing", selection:model.binding(\.videoFraming)) {
                     ForEach(Framing.allCases) { Text($0.rawValue).tag($0) }
@@ -124,23 +133,27 @@ struct CameraSettingsView: View {
 
     private var photoSection: some View {
         Section("Photos") {
-            Picker("Quality priority", selection:model.binding(\.photoQuality)) {
+            Picker("Quality priority", selection:model.settings.raw && !model.settings.preferProRAW ? .constant(PhotoQualityChoice.speed) : model.binding(\.photoQuality)) {
                 ForEach(PhotoQualityChoice.allCases) { Text($0.rawValue).tag($0) }
+            }.disabled(model.settings.raw && !model.settings.preferProRAW)
+            if model.settings.raw && !model.settings.preferProRAW {
+                Text("Bayer RAW uses the camera's required Speed priority.").font(.caption).foregroundStyle(.secondary)
             }
             if model.settings.mode == .photo && model.capabilities.bracketedCapture {
                 Picker("Computational photo (approx)",selection:model.binding(\.computationalPhoto)) {
                     ForEach(ComputationalPhotoMode.allCases) { Text($0.rawValue).tag($0) }
-                }
+                }.disabled(model.settings.preservesNativePhotoOriginals)
                 if model.settings.computationalPhoto != .off {
                     Text("Uses AVFoundation exposure brackets plus HorizonCamera fusion. It approximates Night/Smart HDR/detail fusion; it is not Apple's private ISP/Neural Engine pipeline.").font(.caption).foregroundStyle(.secondary)
                 }
             }
             if model.settings.mode != .panorama && model.settings.mode != .spatialPhoto {
                 Picker("Photographic Style (approx)",selection:model.binding(\.photographicStyle)) { ForEach(PhotographicStyleApprox.allCases) { Text($0.rawValue).tag($0) } }
+                    .disabled(model.settings.preservesNativePhotoOriginals)
                 if model.settings.photographicStyle != .standard || model.settings.hasCustomStyle {
-                    LabeledContent("Style intensity",value:String(format:"%.0f%%",model.settings.styleIntensity*100)); Slider(value:model.binding(\.styleIntensity),in:0...1,step:0.05)
-                    LabeledContent("Tone",value:String(format:"%+.0f",model.settings.styleTone*100)); Slider(value:model.binding(\.styleTone),in:-1...1,step:0.05)
-                    LabeledContent("Warmth",value:String(format:"%+.0f",model.settings.styleWarmth*100)); Slider(value:model.binding(\.styleWarmth),in:-1...1,step:0.05)
+                    LabeledContent("Style intensity",value:String(format:"%.0f%%",model.settings.styleIntensity*100)); Slider(value:model.binding(\.styleIntensity),in:0...1,step:0.05).disabled(model.settings.preservesNativePhotoOriginals)
+                    LabeledContent("Tone",value:String(format:"%+.0f",model.settings.styleTone*100)); Slider(value:model.binding(\.styleTone),in:-1...1,step:0.05).disabled(model.settings.preservesNativePhotoOriginals)
+                    LabeledContent("Warmth",value:String(format:"%+.0f",model.settings.styleWarmth*100)); Slider(value:model.binding(\.styleWarmth),in:-1...1,step:0.05).disabled(model.settings.preservesNativePhotoOriginals)
                 }
             }
             if model.settings.mode == .portrait {
@@ -153,7 +166,11 @@ struct CameraSettingsView: View {
             }
             Picker("Filter", selection:model.binding(\.filter)) {
                 ForEach(CaptureFilter.allCases) { Text($0.rawValue).tag($0) }
-            }.disabled(model.settings.mode == .portrait)
+            }.disabled(model.settings.mode == .portrait || model.settings.preservesNativePhotoOriginals)
+            if model.settings.preservesNativePhotoOriginals {
+                Text("RAW and Live Photo preserve native originals, so custom processing, filters and styles are unavailable.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
 
             if model.capabilities.depthData {
                 Toggle("Depth data", isOn:model.binding(\.depthData)).disabled(model.settings.raw || model.settings.isProcessedPhoto || model.settings.mode == .portrait)
@@ -177,7 +194,9 @@ struct CameraSettingsView: View {
             if model.capabilities.responsiveCapture { Toggle("Responsive capture", isOn:model.binding(\.responsiveCapture)) }
             if model.capabilities.zeroShutterLag { Toggle("Zero shutter lag", isOn:model.binding(\.zeroShutterLag)) }
             if model.capabilities.fastCapturePrioritization { Toggle("Prioritize faster shooting", isOn:model.binding(\.fastCapturePrioritization)) }
-            if model.capabilities.autoDeferredPhotoDelivery { Toggle("Automatic deferred photo delivery", isOn:model.binding(\.autoDeferredPhotoDelivery)) }
+            Toggle("Automatic deferred photo delivery", isOn:.constant(false)).disabled(true)
+            Text("Full-resolution native originals are required for saved captures.")
+                .font(.caption).foregroundStyle(.secondary)
 
             Text(model.settings.mode == .portrait
                  ? "Portrait captures AVFoundation depth and Portrait Effects matte data in the photo when the device supports them. It does not fake Apple's proprietary Portrait Lighting or stock Camera blur rendering."

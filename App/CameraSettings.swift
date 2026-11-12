@@ -266,7 +266,7 @@ struct CameraSettings: Codable, Equatable {
     var responsiveCapture = true
     var zeroShutterLag = true
     var fastCapturePrioritization = true
-    var autoDeferredPhotoDelivery = true
+    var autoDeferredPhotoDelivery = false
     var photoQuality: PhotoQualityChoice = .quality
     var cinematicAperture: Float = 4.0
     var customMetadataEnabled = false
@@ -281,7 +281,8 @@ struct CameraSettings: Codable, Equatable {
 
     var framing: Framing { mode.isPhotoMode ? photoFraming : videoFraming }
     var hasCustomStyle: Bool { photographicStyle != .standard || abs(styleTone) > 0.001 || abs(styleWarmth) > 0.001 }
-    var isProcessedPhoto: Bool { mode.isPhotoMode && mode != .panorama && mode != .spatialPhoto && (mode == .portrait || horizonLock || zoomLock || zoom > 1.001 || filter != .original || photoFraming != .classic || hasCustomStyle || portraitLighting != .natural || computationalPhoto != .off) }
+    var preservesNativePhotoOriginals: Bool { mode == .photo && (raw || livePhoto) }
+    var isProcessedPhoto: Bool { mode.isPhotoMode && !preservesNativePhotoOriginals && mode != .panorama && mode != .spatialPhoto && (mode == .portrait || horizonLock || zoomLock || zoom > 1.001 || filter != .original || photoFraming != .classic || hasCustomStyle || portraitLighting != .natural || computationalPhoto != .off) }
     var captureFPS: Double { mode == .slowMotion ? Double(slowMotionFPS) : fps }
     var effectiveOutputResolution: Resolution {
         if actionStabilization && !resolution.isRAWFrameSize && resolution.longEdge > Resolution.action2_8K.longEdge {
@@ -308,7 +309,7 @@ struct CameraSettings: Codable, Equatable {
     }
     var reserve: Double { captureReserve }
     var usesNativeMoviePipeline: Bool { mode.isNativeMovieMode || codec.isProRes || colorProfile != .sdr || audioMode != .mono || (mode == .video && fps > 60) }
-    var usesBracketedPhotoPipeline: Bool { mode == .photo && computationalPhoto.isBracketed }
+    var usesBracketedPhotoPipeline: Bool { mode == .photo && !preservesNativePhotoOriginals && computationalPhoto.isBracketed }
 
     mutating func normalize(changedFrom old: CameraSettings) {
         zoom = min(max(zoom, 1), 12)
@@ -321,6 +322,9 @@ struct CameraSettings: Codable, Equatable {
         shutterAngle=min(max(shutterAngle,1.1),360)
         whiteBalanceKelvin=min(max(whiteBalanceKelvin,2500),10000)
         whiteBalanceTint=min(max(whiteBalanceTint,-150),150)
+        // Deferred proxies need a separate PhotoKit ingestion/final-original workflow.
+        // Our local library only accepts completed original photo resources.
+        autoDeferredPhotoDelivery = false
         if mode.isPhotoMode {
             if codec.isProRes { codec = .efficient }
             colorProfile = .sdr
@@ -359,6 +363,26 @@ struct CameraSettings: Codable, Equatable {
             photographicStyle = .standard
             filter = .original
         }
+        if mode == .photo && raw && livePhoto {
+            if raw != old.raw { livePhoto = false } else { raw = false }
+        }
+        if preservesNativePhotoOriginals {
+            // A native format selection must never silently become a rendered still.
+            // Keep its still/DNG/movie resources intact and show their actual framing.
+            horizonLock = false
+            zoomLock = false
+            zoom = 1
+            photoFraming = .classic
+            filter = .original
+            photographicStyle = .standard
+            styleTone = 0
+            styleWarmth = 0
+            portraitLighting = .natural
+            computationalPhoto = .off
+            constantColor = false
+            centerStage = false
+            smartFraming = false
+        }
         if computationalPhoto != .off {
             raw = false
             livePhoto = false
@@ -389,6 +413,7 @@ struct CameraSettings: Codable, Equatable {
             semanticMattes = false
             constantColor = false
             cameraCalibrationData = false
+            contentAwareDistortionCorrection = false
         }
         if !depthData { portraitEffectsMatte = false }
         if !raw { preferProRAW = true }
@@ -415,17 +440,15 @@ struct CameraSettings: Codable, Equatable {
             zoomLock = false
             filter = .original
         }
-        if isProcessedPhoto {
+        if mode != .photo {
             livePhoto = false
             raw = false
-        } else if livePhoto && raw {
-            if raw != old.raw { livePhoto = false } else { raw = false }
         }
     }
 
     func requiresCaptureReconfiguration(comparedTo old: CameraSettings) -> Bool {
         mode != old.mode || resolution != old.resolution || captureFPS != old.captureFPS || autoFPS != old.autoFPS ||
-        horizonLock != old.horizonLock || zoomLock != old.zoomLock || livePhoto != old.livePhoto || raw != old.raw ||
+        horizonLock != old.horizonLock || zoomLock != old.zoomLock || livePhoto != old.livePhoto || raw != old.raw || preferProRAW != old.preferProRAW ||
         mirrorSelfie != old.mirrorSelfie || isProcessedPhoto != old.isProcessedPhoto || stabilization != old.stabilization ||
         codec != old.codec || colorProfile != old.colorProfile || audioMode != old.audioMode || windNoiseRemoval != old.windNoiseRemoval ||
         responsiveCapture != old.responsiveCapture || zeroShutterLag != old.zeroShutterLag || fastCapturePrioritization != old.fastCapturePrioritization ||

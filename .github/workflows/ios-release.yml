@@ -72,12 +72,14 @@ jobs:
           cat > build/release-notes.md <<EOF
           Native Swift camera with sensor-driven Horizon Lock and edge-limited floating-frame Zoom Lock.
 
+          RAW and Live Photo preserve their native original resources and fail explicitly when the requested format or resource is unavailable. Action's Native Assist switch controls the supported native stabilization layer. Custom crop/rotation applies only to compatible rendered output.
+
           **Unsigned IPA.** Sign it with your own certificate/profile or sideloading tool before installing. No Apple developer secrets are required for this build.
 
           Commit: ${GITHUB_SHA}
           Build: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 
-          Automated gates: geometry/motion/timeline regression tests; simulator compilation; executed iOS pixel/Vision/movie/audio and JPEG/HEIC metadata round-trip tests; Release ARM64 compilation; IPA structure, platform, privacy and unsigned Mach-O verification.
+          Automated gates: geometry/motion/timeline regression tests; simulator compilation; executed iOS pixel/Vision/movie/audio, strict RAW/Live capture policy, native-original byte preservation, stabilization selection, and JPEG/HEIC metadata round-trip tests; Release ARM64 compilation; IPA structure, platform, privacy and unsigned Mach-O verification.
 
           Physical-device stabilization quality, roll-axis calibration, low-light blur and sustained thermal performance still require the checks in Docs/DEVICE_TESTS.md. This is not a claim of Samsung/Apple image-quality parity.
           EOF

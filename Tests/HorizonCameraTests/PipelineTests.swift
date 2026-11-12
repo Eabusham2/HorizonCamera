@@ -224,7 +224,7 @@ final class PipelineTests: XCTestCase {
             for i in 0..<3 { XCTAssertLessThanOrEqual(abs(Int(a[i])-Int(b[i])),5) }
         }
     }
-    func testNativePhotoExtrasAreMutuallyExclusiveAndDisabledByProcessing() {
+    func testNativePhotoExtrasAreMutuallyExclusiveAndPreserveOriginalFraming() {
         var base = CameraSettings(); base.mode = .photo; base.horizonLock = false; base.zoomLock = false; base.zoom = 1; base.filter = .original; base.photoFraming = .classic
         var live = base; live.livePhoto = true; live.normalize(changedFrom:base)
         XCTAssertTrue(live.livePhoto); XCTAssertFalse(live.raw); XCTAssertFalse(live.isProcessedPhoto)
@@ -233,7 +233,74 @@ final class PipelineTests: XCTestCase {
         var liveAgain = raw; liveAgain.livePhoto = true; liveAgain.normalize(changedFrom:raw)
         XCTAssertTrue(liveAgain.livePhoto); XCTAssertFalse(liveAgain.raw)
         var square = liveAgain; square.photoFraming = .square; square.normalize(changedFrom:liveAgain)
-        XCTAssertTrue(square.isProcessedPhoto); XCTAssertFalse(square.livePhoto); XCTAssertFalse(square.raw)
+        XCTAssertFalse(square.isProcessedPhoto); XCTAssertTrue(square.livePhoto); XCTAssertFalse(square.raw)
+        XCTAssertEqual(square.photoFraming, .classic)
+    }
+    func testNativePhotoResourcesAreSavedByteForByteWithoutCustomTransforms() throws {
+        let renderer = try makeRenderer(), engine = CaptureEngine(renderer: try makeRenderer())
+        let original = try XCTUnwrap(renderer.context.jpegRepresentation(of: pattern(width: 320, height: 240),
+            colorSpace: renderer.colorSpace, options: [:]))
+        // Sidecar fixtures test byte preservation, not hardware RAW/movie encoding.
+        let rawOriginal = Data("opaque native DNG resource fixture".utf8)
+        let movieOriginal = Data("opaque native Live movie resource fixture".utf8)
+        var cleanup: [URL] = []
+        defer { for url in cleanup { try? FileManager.default.removeItem(at: url) } }
+        for isRAW in [true, false] {
+            for explicitNativeSetting in [true, false] {
+                var settings = CameraSettings()
+                settings.mode = .photo; settings.horizonLock = true; settings.zoomLock = true
+                settings.zoom = 2; settings.photoFraming = .square; settings.filter = .vivid
+                settings.raw = isRAW && explicitNativeSetting
+                settings.livePhoto = !isRAW && explicitNativeSetting
+                let movie: URL?
+                if isRAW { movie = nil }
+                else {
+                    let url = try MediaFiles.newURL(extension: "mov")
+                    cleanup.append(url); try movieOriginal.write(to: url, options: .atomic); movie = url
+                }
+                let packet = PhotoPacket(data: original, rawData: isRAW ? rawOriginal : nil, liveMovie: movie,
+                    timestamp: .invalid, settings: settings, hasDepthData: false, hasPortraitEffectsMatte: false,
+                    hasCalibrationData: false, depthData: nil, portraitEffectsMatte: nil)
+                XCTAssertFalse(packet.requiresProcessing)
+                let draft = try engine.savePhoto(packet)
+                cleanup.append(draft.url)
+                XCTAssertEqual(try Data(contentsOf: draft.url), original)
+                if isRAW {
+                    let rawURL = try XCTUnwrap(draft.raw); cleanup.append(rawURL)
+                    XCTAssertEqual(try Data(contentsOf: rawURL), rawOriginal)
+                    XCTAssertNil(draft.liveMovie)
+                } else {
+                    XCTAssertEqual(draft.liveMovie, movie)
+                    XCTAssertEqual(try Data(contentsOf: XCTUnwrap(draft.liveMovie)), movieOriginal)
+                    XCTAssertNil(draft.raw)
+                }
+            }
+        }
+    }
+    func testCompatibleProcessedPhotoStillUsesTheRenderedCrop() throws {
+        let renderer = try makeRenderer(), engine = CaptureEngine(renderer: try makeRenderer())
+        var settings = CameraSettings()
+        settings.mode = .photo; settings.horizonLock = false; settings.photoFraming = .square
+        settings.codec = .compatible
+        engine.processor.configure(settings, front: false)
+        let source = pattern(width: 600, height: 800)
+        _ = try engine.processor.process(buffer: buffer(source, renderer: renderer), hostTime: 1)
+        let original = try XCTUnwrap(renderer.context.jpegRepresentation(of: source, colorSpace: renderer.colorSpace, options: [:]))
+        let packet = PhotoPacket(data: original, rawData: nil, liveMovie: nil,
+            timestamp: CMTime(seconds: 1, preferredTimescale: 600), settings: settings,
+            hasDepthData: false, hasPortraitEffectsMatte: false, hasCalibrationData: false,
+            depthData: nil, portraitEffectsMatte: nil)
+        XCTAssertTrue(packet.requiresProcessing)
+        let draft = try engine.savePhoto(packet)
+        defer { try? FileManager.default.removeItem(at: draft.url) }
+        let saved = try Data(contentsOf: draft.url)
+        XCTAssertNotEqual(saved, original)
+        let decoded = try XCTUnwrap(CGImageSourceCreateWithData(saved as CFData, nil))
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(decoded, 0, nil))
+        XCTAssertEqual(image.width, image.height)
+        XCTAssertGreaterThan(image.width, 0)
+        XCTAssertLessThanOrEqual(image.width, 600)
+        XCTAssertNil(draft.raw); XCTAssertNil(draft.liveMovie)
     }
     func testNonClassicPhotoFramingProducesRequestedAspect() throws {
         let renderer = try makeRenderer(), processor = FrameProcessor(motion:MotionService(),renderer:try makeRenderer())

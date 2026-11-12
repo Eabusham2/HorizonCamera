@@ -74,7 +74,7 @@ struct CameraView: View {
     private var livePhotoControl: some View {
         Button { model.change{$0.livePhoto.toggle()} } label: { Image(systemName:"livephoto") }
             .foregroundStyle(model.settings.livePhoto ? .yellow:.white)
-            .disabled(!livePhotoAvailable)
+            .disabled(!livePhotoAvailable && !model.settings.livePhoto)
             .opacity(livePhotoAvailable ? 1:0.35)
     }
     private var rawControl: some View {
@@ -84,12 +84,12 @@ struct CameraView: View {
                 .disabled(!rawAvailable || !model.capabilities.proRAW)
             Button("Bayer RAW") { model.change { $0.raw=true; $0.preferProRAW=false } }
                 .disabled(!rawAvailable || !model.capabilities.raw)
-            Text("RAW options are gray while Horizon/Zoom/filter/processed-photo features require rendered output.")
+            Text("RAW preserves the native original and disables custom crop, rotation and styles. Unsupported RAW types stay unavailable.")
         } label: {
-            Text(model.settings.raw ? (model.settings.preferProRAW && model.capabilities.proRAW ? "RAW+":"RAW") : "RAW")
+            Text(model.settings.raw ? (model.settings.preferProRAW ? "RAW+":"RAW") : "RAW")
                 .font(.system(size:11,weight:.bold)).foregroundStyle(model.settings.raw ? .yellow:.white)
         }
-        .disabled(!rawAvailable)
+        .disabled(!rawAvailable && !model.settings.raw)
         .opacity(rawAvailable ? 1:0.35)
     }
     private var hdrControl: some View {
@@ -300,7 +300,7 @@ struct CameraView: View {
                                disabledReason:zoomLockDisabledReason) { model.change{$0.zoomLock.toggle()} }
                     lockButton("Action",icon:"figure.run",enabled:model.settings.actionStabilization,
                                disabledReason:actionDisabledReason) { model.change{$0.actionStabilization.toggle()} }
-                    lockButton("Smart",icon:"sparkles",enabled:model.settings.smartArtifactGuard,
+                    lockButton("Smart",icon:"sparkles",enabled:model.settings.smartArtifactGuard && smartDisabledReason == nil,
                                disabledReason:smartDisabledReason) { model.change{$0.smartArtifactGuard.toggle()} }
                     nativeStabilizationControl
                 }.padding(.horizontal,1)
@@ -351,20 +351,23 @@ struct CameraView: View {
 
     private var nativeStabilizationControl: some View {
         let blocked=nativeStabilizationDisabledReason != nil
+        let action=model.settings.actionStabilization
+        let enabled = !blocked && (action ? model.settings.actionNativeAssist : model.settings.stabilization != .off)
         return HStack(spacing:0) {
             Button {
                 if let reason=nativeStabilizationDisabledReason { model.notice=reason; return }
                 model.notice=nil
                 model.change { settings in
-                    if settings.stabilization == .off { settings.stabilization = preferredNativeChoice }
+                    if action { settings.actionNativeAssist.toggle() }
+                    else if settings.stabilization == .off { settings.stabilization = preferredNativeChoice }
                     else { settings.stabilization = .off }
                 }
             } label: {
                 HStack(spacing:4) {
-                    Image(systemName:model.settings.stabilization == .off ? "square":"checkmark.square.fill")
+                    Image(systemName:enabled ? "checkmark.square.fill":"square")
                     VStack(alignment:.leading,spacing:0) {
-                        Text("Native").font(.system(size:10,weight:.medium))
-                        Text(model.settings.stabilization == .off ? "Off":model.settings.stabilization.rawValue)
+                        Text(action ? "Native Assist":"Native").font(.system(size:10,weight:.medium))
+                        Text(blocked ? "Unavailable" : (action ? (enabled ? "Auto":"Off") : (enabled ? model.settings.stabilization.rawValue:"Off")))
                             .font(.system(size:7)).lineLimit(1)
                     }
                 }.padding(.leading,7).padding(.vertical,6)
@@ -375,11 +378,11 @@ struct CameraView: View {
                     Button(choice.rawValue) { model.change{$0.stabilization = choice} }
                 }
             } label: { Image(systemName:"chevron.down").font(.system(size:8,weight:.bold)).frame(width:22,height:34) }
-            .disabled(blocked || !model.canConfigure)
+            .disabled(action || blocked || !model.canConfigure)
         }
         .frame(width:112)
-        .foregroundStyle(model.settings.stabilization != .off ? Color.yellow:Color.white.opacity(blocked ? 0.3:1))
-        .background(model.settings.stabilization != .off ? Color.yellow.opacity(0.10):Color.white.opacity(0.055),in:RoundedRectangle(cornerRadius:8))
+        .foregroundStyle(enabled ? Color.yellow:Color.white.opacity(blocked ? 0.3:1))
+        .background(enabled ? Color.yellow.opacity(0.10):Color.white.opacity(0.055),in:RoundedRectangle(cornerRadius:8))
     }
 
     private var shutterRow: some View {
@@ -468,11 +471,13 @@ struct CameraView: View {
     private func framingAvailable(_ framing: Framing) -> Bool { framingUnavailableReason(framing) == nil }
 
     private var horizonDisabledReason: String? {
+        if model.settings.preservesNativePhotoOriginals { return "RAW and Live Photos keep their original framing. Turn them off to use Horizon Lock." }
         if model.settings.mode.isStandaloneCaptureMode { return "Horizon Lock is unavailable in this standalone capture mode." }
         if model.settings.usesNativeMoviePipeline { return "This native movie format bypasses Horizon's custom crop/rotation path." }
         return nil
     }
     private var zoomLockDisabledReason: String? {
+        if model.settings.preservesNativePhotoOriginals { return "RAW and Live Photos keep their original framing. Turn them off to use Zoom Lock." }
         if model.settings.mode.isStandaloneCaptureMode { return "Zoom Lock is unavailable in this standalone capture mode." }
         if model.settings.usesNativeMoviePipeline { return "This native movie format bypasses Horizon's frame-position crop path." }
         return nil
@@ -484,13 +489,14 @@ struct CameraView: View {
         return nil
     }
     private var smartDisabledReason: String? {
+        if model.settings.preservesNativePhotoOriginals { return "Custom Smart crop correction is paused to preserve RAW and Live originals." }
         if model.settings.mode.isStandaloneCaptureMode { return "Smart stabilization is unavailable in this standalone capture mode." }
         if model.settings.usesNativeMoviePipeline { return "Smart custom correction is unavailable on this native-only movie path." }
         return nil
     }
     private var nativeStabilizationDisabledReason: String? {
         if !model.settings.mode.isMovie { return "Native stabilization applies to video modes." }
-        if model.settings.horizonLock || model.settings.zoomLock { return "Native stabilization is paused while Horizon or Zoom Lock owns the crop." }
+        if !model.settings.actionStabilization && (model.settings.horizonLock || model.settings.zoomLock) { return "Native stabilization is paused while Horizon or Zoom Lock owns the crop." }
         if model.capabilities.supportedStabilizationModes.filter({$0 != .off && $0 != .auto}).isEmpty { return "This active camera format reports no native stabilization mode." }
         return nil
     }
@@ -541,6 +547,7 @@ struct CameraView: View {
         return model.isFrontCamera ? "not supported by the front camera at this size" : "not supported by this camera at this size"
     }
     private func framingUnavailableReason(_ framing:Framing) -> String? {
+        if model.settings.preservesNativePhotoOriginals && framing != .classic { return "RAW and Live Photos preserve native framing" }
         if model.settings.mode.isStandaloneCaptureMode { return framing == model.settings.framing ? nil : "fixed by this capture mode" }
         if model.settings.mode.isMovie && model.settings.usesNativeMoviePipeline && framing != .portrait && framing != .landscape { return "native movie path supports 9:16 or 16:9" }
         return nil
@@ -552,10 +559,10 @@ struct CameraView: View {
     }
 
     private var rawAvailable: Bool {
-        model.capabilities.raw && !model.settings.isProcessedPhoto && model.settings.mode == .photo && !model.settings.constantColor
+        (model.capabilities.raw || model.capabilities.proRAW) && model.settings.mode == .photo
     }
     private var livePhotoAvailable: Bool {
-        model.capabilities.livePhoto && !model.settings.isProcessedPhoto && model.settings.mode == .photo && !model.settings.raw && !model.settings.constantColor
+        model.capabilities.livePhoto && model.settings.mode == .photo
     }
     private var formatLabel: String {
         if model.settings.mode.isPhotoMode {

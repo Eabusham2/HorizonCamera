@@ -317,7 +317,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             photoOutput.enabledSemanticSegmentationMatteTypes = settings.semanticMattes && !settings.raw ? photoOutput.availableSemanticSegmentationMatteTypes : []
             if #available(iOS 18.0, *), photoOutput.isConstantColorSupported { photoOutput.isConstantColorEnabled = settings.constantColor && !settings.raw }
             if #available(iOS 26.0, *), photoOutput.isCameraSensorOrientationCompensationSupported { photoOutput.isCameraSensorOrientationCompensationEnabled = settings.sensorOrientationCompensation && !settings.raw }
-            if photoOutput.isContentAwareDistortionCorrectionSupported { photoOutput.isContentAwareDistortionCorrectionEnabled = settings.contentAwareDistortionCorrection && !settings.cameraCalibrationData }
+            if photoOutput.isContentAwareDistortionCorrectionSupported { photoOutput.isContentAwareDistortionCorrectionEnabled = settings.contentAwareDistortionCorrection && !settings.cameraCalibrationData && !settings.raw }
             photoOutput.isLivePhotoCaptureEnabled = photoOutput.isLivePhotoCaptureSupported &&
                 settings.mode.isPhotoMode && settings.livePhoto && !settings.raw && !settings.isProcessedPhoto
             if photoOutput.isAppleProRAWSupported { photoOutput.isAppleProRAWEnabled = settings.raw && settings.preferProRAW && !settings.livePhoto && !settings.isProcessedPhoto }
@@ -353,7 +353,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         capabilities.selectedLens = device.uniqueID
         capabilities.flash = device.hasFlash; capabilities.torch = device.hasTorch
         capabilities.livePhoto = photoOutput.isLivePhotoCaptureSupported
-        capabilities.raw = !photoOutput.availableRawPhotoPixelFormatTypes.isEmpty
+        capabilities.raw = photoOutput.availableRawPhotoPixelFormatTypes.contains(where: AVCapturePhotoOutput.isBayerRAWPixelFormat)
         capabilities.qrScanning = metadataOutput.availableMetadataObjectTypes.contains(.qr)
         capabilities.maxBracketedCaptureCount = photoOutput.maxBracketedCapturePhotoCount
         capabilities.bracketedCapture = photoOutput.maxBracketedCapturePhotoCount >= 2
@@ -383,8 +383,9 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         zoom.accessibilityIdentifier = "horizon.zoom"
         zoom.localizedValueFormat = "%.1f×"
         zoom.value = Float(settings.zoom)
+        zoom.isEnabled = !settings.preservesNativePhotoOriginals
         zoom.setActionQueue(sessionQueue) { [weak self] value in
-            guard let self else { return }
+            guard let self, !self.configuration.preservesNativePhotoOriginals else { return }
             let zoomValue = min(max(Double(value),1),12)
             self.configuration.zoom = zoomValue
             self.frameQueue.async { [weak self] in self?.processor.setZoom(zoomValue,atUIKit:nil) }
@@ -436,6 +437,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             guard let slider = control as? AVCaptureSlider else { continue }
             switch slider.accessibilityIdentifier {
             case "horizon.zoom":
+                slider.isEnabled = !settings.preservesNativePhotoOriginals
                 let value=Float(min(max(settings.zoom,1),12)); if abs(slider.value-value) > 0.001 { slider.value=value }
             case "horizon.focus":
                 if settings.manualFocus { let value=min(max(settings.lensPosition,0),1); if abs(slider.value-value) > 0.001 { slider.value=value } }
@@ -485,6 +487,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     func setZoom(_ zoom: Double, anchor: Point2? = nil) {
         let value = min(max(zoom,1),12)
         sessionQueue.async { [self] in
+            guard !configuration.preservesNativePhotoOriginals else { return }
             configuration.zoom = value
             if #available(iOS 18.0, *) { syncCameraControlValues(configuration) }
             let native = configuration.usesNativeMoviePipeline
@@ -692,18 +695,21 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             do {
                 try MediaFiles.requireSpace()
                 let config = configuration
-                let codec: AVVideoCodecType = config.codec == .efficient && photoOutput.availablePhotoCodecTypes.contains(.hevc) ? .hevc : .jpeg
+                let plan = try PhotoCapturePlan(settings: config, availableCodecs: photoOutput.availablePhotoCodecTypes,
+                    rawFormats: photoOutput.availableRawPhotoPixelFormatTypes,
+                    livePhotoEnabled: photoOutput.isLivePhotoCaptureEnabled,
+                    livePhotoSuspended: photoOutput.isLivePhotoCaptureSuspended)
+                let codec = plan.codec
                 if config.usesBracketedPhotoPipeline, try captureComputationalPhoto(config,codec:codec) { return }
                 let settings: AVCapturePhotoSettings
-                if config.raw && !config.livePhoto && !config.isProcessedPhoto {
-                    let types = photoOutput.availableRawPhotoPixelFormatTypes
-                    let selected: OSType? = config.preferProRAW
-                        ? (types.first(where: { AVCapturePhotoOutput.isAppleProRAWPixelFormat($0) }) ?? types.first)
-                        : (types.first(where: { !AVCapturePhotoOutput.isAppleProRAWPixelFormat($0) }) ?? types.first)
-                    if let raw = selected { settings = AVCapturePhotoSettings(rawPixelFormatType:raw,processedFormat:[AVVideoCodecKey:codec]) }
-                    else { settings = AVCapturePhotoSettings(format:[AVVideoCodecKey:codec]) }
+                if let raw = plan.rawPixelFormat {
+                    guard device.videoZoomFactor == 1,
+                          (photoOutput.connection(with: .video)?.videoScaleAndCropFactor ?? 1) == 1 else {
+                        throw CameraFailure.message("RAW requires the lens's native framing. Reset zoom before capturing.")
+                    }
+                    settings = AVCapturePhotoSettings(rawPixelFormatType:raw,processedFormat:[AVVideoCodecKey:codec])
                 } else { settings = AVCapturePhotoSettings(format:[AVVideoCodecKey:codec]) }
-                settings.photoQualityPrioritization = config.photoQuality.avValue
+                settings.photoQualityPrioritization = plan.qualityPrioritization
                 let validDimensions = device.activeFormat.supportedMaxPhotoDimensions.filter {
                     Int64($0.width) * Int64($0.height) <= Int64(photoOutput.maxPhotoDimensions.width) * Int64(photoOutput.maxPhotoDimensions.height)
                 }
@@ -714,7 +720,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 else { settings.maxPhotoDimensions = validDimensions.max(by: { Int64($0.width)*Int64($0.height) < Int64($1.width)*Int64($1.height) }) ?? photoOutput.maxPhotoDimensions }
                 settings.metadata = CaptureMetadata.photo(config)
                 settings.isAutoRedEyeReductionEnabled = config.autoRedEyeReduction && photoOutput.isAutoRedEyeReductionSupported
-                settings.isAutoContentAwareDistortionCorrectionEnabled = config.contentAwareDistortionCorrection && photoOutput.isContentAwareDistortionCorrectionEnabled
+                settings.isAutoContentAwareDistortionCorrectionEnabled = config.contentAwareDistortionCorrection && photoOutput.isContentAwareDistortionCorrectionEnabled && !config.raw
                 settings.isAutoVirtualDeviceFusionEnabled = config.virtualDeviceFusion && photoOutput.isVirtualDeviceFusionSupported
                 settings.isCameraCalibrationDataDeliveryEnabled = config.cameraCalibrationData && photoOutput.isCameraCalibrationDataDeliverySupported
                 settings.isDepthDataDeliveryEnabled = config.depthData && photoOutput.isDepthDataDeliveryEnabled && !config.raw
@@ -730,7 +736,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 }
                 if device.hasFlash { settings.flashMode = config.flash.avMode }
                 var liveURL: URL?
-                if config.livePhoto && !config.raw && !config.isProcessedPhoto && photoOutput.isLivePhotoCaptureEnabled {
+                if plan.livePhoto {
                     liveURL = try MediaFiles.newURL(extension:"mov"); settings.livePhotoMovieFileURL = liveURL
                     settings.livePhotoMovieMetadata = NativeMovieController.movieMetadata(config)
                 }
@@ -755,10 +761,18 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             } catch { report(error.localizedDescription); setState(wantedRunning ? .ready : .stopped) }
         }
     }
-    private func savePhoto(_ packet: PhotoPacket) throws -> MediaDraft {
+    func savePhoto(_ packet: PhotoPacket) throws -> MediaDraft {
+        var writtenURLs = [URL]()
+        var completed = false
+        defer {
+            if !completed {
+                for url in writtenURLs + [packet.liveMovie].compactMap({ $0 }) { try? FileManager.default.removeItem(at: url) }
+            }
+        }
+        try packet.validate()
         var data = packet.data
         var suffix = data.starts(with:[0xff,0xd8]) ? "jpg" : "heic"
-        if packet.settings.isProcessedPhoto {
+        if packet.requiresProcessing {
             guard var image = CIImage(data:data,options:[.applyOrientationProperty:true]) else { throw CameraFailure.message("Cannot decode this still image.") }
             if packet.settings.mode == .portrait || packet.settings.portraitLighting != .natural {
                 let matte = packet.portraitEffectsMatte.map { CIImage(cvPixelBuffer:$0.mattingImage) }
@@ -772,11 +786,14 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             } else { throw CameraFailure.message("Cannot encode the processed photo.") }
         }
         let url = try MediaFiles.newURL(extension:suffix)
+        writtenURLs.append(url)
         try data.write(to:url,options:.atomic)
         var rawURL: URL?
         if let raw = packet.rawData {
-            rawURL = try MediaFiles.newURL(extension:"dng")
-            try raw.write(to:rawURL!,options:.atomic)
+            let destination = try MediaFiles.newURL(extension:"dng")
+            writtenURLs.append(destination)
+            try raw.write(to:destination,options:.atomic)
+            rawURL = destination
         }
         var features: [String] = []
         if packet.hasDepthData { features.append("depth") }
@@ -784,12 +801,14 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         if packet.settings.semanticMattes { features.append("semantic mattes") }
         if packet.hasCalibrationData { features.append("calibration") }
         if packet.settings.constantColor { features.append("Constant Color") }
-        if packet.settings.mode == .portrait { features.append("\(packet.settings.portraitLighting.rawValue) lighting approx") }
-        if packet.settings.hasCustomStyle { features.append("\(packet.settings.photographicStyle.rawValue) style approx") }
+        if packet.requiresProcessing && packet.settings.mode == .portrait { features.append("\(packet.settings.portraitLighting.rawValue) lighting approx") }
+        if packet.requiresProcessing && packet.settings.hasCustomStyle { features.append("\(packet.settings.photographicStyle.rawValue) style approx") }
         if packet.rawData != nil { features.append(packet.settings.preferProRAW ? "Apple ProRAW" : "RAW") }
+        if packet.liveMovie != nil { features.append("Live Photo") }
         let suffixSummary = features.isEmpty ? "" : " · " + features.joined(separator: ", ")
+        completed = true
         return MediaDraft(url:url,liveMovie:packet.liveMovie,raw:rawURL,
-            summary:(packet.settings.isProcessedPhoto ? "Processed photo · same lock/crop as preview" : "Native maximum-quality photo") + suffixSummary)
+            summary:(packet.requiresProcessing ? "Processed photo · same lock/crop as preview" : "Native maximum-quality photo") + suffixSummary)
     }
     private func hostTime(for pts: CMTime) -> Double {
         guard pts.isValid && !pts.isIndefinite else { return CMClockGetTime(CMClockGetHostTimeClock()).seconds }

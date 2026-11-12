@@ -44,6 +44,7 @@ import Photos
     nonisolated static func preparedForLaunch(_ value: CameraSettings) -> CameraSettings {
         var result=value
         result.zoom=1; result.torch=false; result.aeafLock=false
+        result.normalize(changedFrom:value)
         return result
     }
     nonisolated static func preparedForPersistence(_ value: CameraSettings) -> CameraSettings {
@@ -298,6 +299,10 @@ import Photos
 
     func zoom(_ value: Double, at anchor: Point2? = nil) {
         guard state == .ready || state == .recording else { return }
+        guard !settings.preservesNativePhotoOriginals else {
+            notice = "RAW and Live Photos keep their original framing. Turn them off to use crop zoom."
+            return
+        }
         settings.zoom = min(max(value,1),12)
         engine?.setZoom(settings.zoom,anchor:anchor)
     }
@@ -326,6 +331,20 @@ import Photos
     }
     func setDisplayZoom(_ requested: Double, at anchor: Point2? = nil) {
         guard state == .ready || state == .recording else { return }
+        if settings.preservesNativePhotoOriginals {
+            guard anchor == nil else {
+                notice = "RAW and Live Photos keep their original framing. Turn them off to use crop zoom."
+                return
+            }
+            guard canConfigure else { return }
+            let backs = capabilities.lenses.filter { !$0.isFront && !$0.isVirtual }
+            notice = "Native RAW/Live capture uses full lens framing; zoom snaps to physical lenses."
+            if let lens = backs.min(by: { abs($0.factor-requested) < abs($1.factor-requested) }),
+               lens.id != capabilities.selectedLens {
+                selectLens(lens)
+            }
+            return
+        }
         let backs=capabilities.lenses.filter{!$0.isFront && !$0.isVirtual}.sorted{$0.factor<$1.factor}
         guard !backs.isEmpty else { zoom(requested,at:anchor); return }
         var target=min(max(requested,zoomRange.lowerBound),zoomRange.upperBound)
@@ -358,6 +377,8 @@ import Photos
         guard settings.mode.isPhotoMode && settings.mode != .panorama && settings.mode != .spatialPhoto else { return }
         if burstLocked { burstLocked=false; burstTask?.cancel(); burstTask=nil; return }
         guard canConfigure else { return }
+        settingsTask?.cancel()
+        engine?.update(settings)
         burstLocked=true
         burstTask=Task { [weak self] in
             guard let self else { return }

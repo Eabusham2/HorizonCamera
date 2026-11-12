@@ -80,7 +80,8 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
             result.responsiveCapture = photo.isResponsiveCaptureSupported
             result.zeroShutterLag = photo.isZeroShutterLagSupported
             result.fastCapturePrioritization = photo.isFastCapturePrioritizationSupported
-            result.autoDeferredPhotoDelivery = photo.isAutoDeferredPhotoDeliverySupported
+            // The local library requires completed originals, not deferred proxies.
+            result.autoDeferredPhotoDelivery = false
             result.supportedPhotoResolutionsMP = Array(Set(format.supportedMaxPhotoDimensions.map {
                 Int((Double($0.width) * Double($0.height) / 1_000_000).rounded())
             })).filter { $0 > 0 }.sorted()
@@ -105,21 +106,28 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
     }
 
     /// Public AVFoundation does not expose Apple's stock Camera Action Mode.
-    /// For the Action tick, request the strongest stabilization mode this active
-    /// format actually reports, then layer HorizonCamera's gyro/crop correction on top.
-    static func preferredActionNativeStabilization(for format: AVCaptureDevice.Format) -> AVCaptureVideoStabilizationMode {
-        if #available(iOS 26.0, *), format.isVideoStabilizationModeSupported(.lowLatency) { return .lowLatency }
-        if #available(iOS 18.0, *), format.isVideoStabilizationModeSupported(.cinematicExtendedEnhanced) { return .cinematicExtendedEnhanced }
+    /// Prefer low-latency native assistance, then the strongest supported fallback,
+    /// and layer HorizonCamera's gyro/crop correction on top.
+    private static func preferredActionNativeStabilization(supports: (AVCaptureVideoStabilizationMode) -> Bool) -> AVCaptureVideoStabilizationMode {
+        if #available(iOS 26.0, *), supports(.lowLatency) { return .lowLatency }
+        if #available(iOS 18.0, *), supports(.cinematicExtendedEnhanced) { return .cinematicExtendedEnhanced }
         for mode: AVCaptureVideoStabilizationMode in [.cinematicExtended, .cinematic, .standard, .auto] {
-            if format.isVideoStabilizationModeSupported(mode) { return mode }
+            if supports(mode) { return mode }
         }
         return .off
     }
 
     static func preferredStabilization(_ settings: CameraSettings, format: AVCaptureDevice.Format) -> AVCaptureVideoStabilizationMode {
+        preferredStabilization(settings, supports: { format.isVideoStabilizationModeSupported($0) })
+    }
+
+    static func preferredStabilization(_ settings: CameraSettings, supports: (AVCaptureVideoStabilizationMode) -> Bool) -> AVCaptureVideoStabilizationMode {
+        if settings.actionStabilization {
+            return settings.actionNativeAssist ? preferredActionNativeStabilization(supports: supports) : .off
+        }
         if settings.horizonLock || settings.zoomLock { return .off }
         let requested = settings.stabilization.avMode
-        return format.isVideoStabilizationModeSupported(requested) ? requested : .off
+        return supports(requested) ? requested : .off
     }
 
     static func applyLiveSettings(_ settings: CameraSettings, engine: CaptureEngine) {
@@ -143,7 +151,7 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                     device.setCameraLensSmudgeDetectionEnabled(settings.lensCleaningHints,
                         detectionInterval: CMTime(seconds:5,preferredTimescale:600))
                     if let monitor = device.smartFramingMonitor {
-                        monitor.enabledFramings = settings.smartFraming ? monitor.supportedFramings : []
+                        monitor.enabledFramings = settings.smartFraming && !settings.preservesNativePhotoOriginals ? monitor.supportedFramings : []
                     }
                 }
                 if #available(iOS 18.0, *), device.activeFormat.isAutoVideoFrameRateSupported { device.isAutoVideoFrameRateEnabled = settings.autoFPS }
@@ -163,7 +171,7 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
             } catch { }
             if device.activeFormat.isCenterStageSupported {
                 AVCaptureDevice.centerStageControlMode = .cooperative
-                AVCaptureDevice.isCenterStageEnabled = settings.centerStage
+                AVCaptureDevice.isCenterStageEnabled = settings.centerStage && !settings.preservesNativePhotoOriginals
             } else if AVCaptureDevice.centerStageControlMode != .user {
                 AVCaptureDevice.isCenterStageEnabled = false
             }
@@ -172,15 +180,17 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                 if photo.isResponsiveCaptureSupported { photo.isResponsiveCaptureEnabled = settings.responsiveCapture }
                 if photo.isZeroShutterLagSupported { photo.isZeroShutterLagEnabled = settings.zeroShutterLag }
                 if photo.isFastCapturePrioritizationSupported { photo.isFastCapturePrioritizationEnabled = settings.fastCapturePrioritization }
-                if photo.isAutoDeferredPhotoDeliverySupported { photo.isAutoDeferredPhotoDeliveryEnabled = settings.autoDeferredPhotoDelivery }
-                if photo.isDepthDataDeliverySupported { photo.isDepthDataDeliveryEnabled = settings.depthData }
-                if photo.isPortraitEffectsMatteDeliverySupported { photo.isPortraitEffectsMatteDeliveryEnabled = settings.portraitEffectsMatte && settings.depthData }
-                photo.enabledSemanticSegmentationMatteTypes = settings.semanticMattes ? photo.availableSemanticSegmentationMatteTypes : []
+                if photo.isAutoDeferredPhotoDeliverySupported { photo.isAutoDeferredPhotoDeliveryEnabled = false }
+                if photo.isDepthDataDeliverySupported { photo.isDepthDataDeliveryEnabled = settings.depthData && !settings.raw }
+                if photo.isPortraitEffectsMatteDeliverySupported { photo.isPortraitEffectsMatteDeliveryEnabled = settings.portraitEffectsMatte && settings.depthData && !settings.raw }
+                photo.enabledSemanticSegmentationMatteTypes = settings.semanticMattes && !settings.raw ? photo.availableSemanticSegmentationMatteTypes : []
                 if #available(iOS 18.0, *), photo.isConstantColorSupported { photo.isConstantColorEnabled = settings.constantColor }
                 if #available(iOS 26.0, *), photo.isCameraSensorOrientationCompensationSupported { photo.isCameraSensorOrientationCompensationEnabled = settings.sensorOrientationCompensation && !settings.raw }
-                if photo.isContentAwareDistortionCorrectionSupported { photo.isContentAwareDistortionCorrectionEnabled = settings.contentAwareDistortionCorrection && !settings.cameraCalibrationData }
+                if photo.isContentAwareDistortionCorrectionSupported { photo.isContentAwareDistortionCorrectionEnabled = settings.contentAwareDistortionCorrection && !settings.cameraCalibrationData && !settings.raw }
                 if photo.isAppleProRAWSupported { photo.isAppleProRAWEnabled = settings.raw && settings.preferProRAW }
-                photo.maxPhotoQualityPrioritization = settings.photoQuality.avValue
+                // Each request selects its own quality. Keep the output capable of
+                // every offered priority so queued setting changes cannot exceed it.
+                photo.maxPhotoQualityPrioritization = .quality
                 engine.session.commitConfiguration()
             }
             for connection in engine.session.outputs.compactMap({ $0.connection(with: .video) }) where connection.isVideoStabilizationSupported {
@@ -197,7 +207,7 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
 
     @available(iOS 26.0, *)
     static func applySmartFramingIfNeeded(_ settings: CameraSettings, engine: CaptureEngine) {
-        guard settings.smartFraming else { return }
+        guard settings.smartFraming, !settings.preservesNativePhotoOriginals else { return }
         engine.sessionQueue.async {
             guard let input = engine.session.inputs.compactMap({ $0 as? AVCaptureDeviceInput }).first(where: { $0.ports.contains(where: { $0.mediaType == .video }) }),
                   let monitor = input.device.smartFramingMonitor,

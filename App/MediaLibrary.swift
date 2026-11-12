@@ -42,6 +42,7 @@ enum MediaFiles {
 @MainActor final class MediaLibrary: ObservableObject {
     @Published private(set) var items: [MediaItem] = []
     @Published var message: String?
+    private var exportsInProgress: Set<UUID> = []
     private var manifest: URL { MediaFiles.directory.appendingPathComponent("library.json") }
     init() {
         do {
@@ -68,7 +69,14 @@ enum MediaFiles {
         else { message = nil }
     }
     func exportToPhotos(_ item: MediaItem) async {
-        if item.savedToPhotos { message = "This capture is already saved to Photos."; return }
+        guard let current = items.first(where: { $0.id == item.id }) else {
+            message = "This capture is no longer in the local library."; return
+        }
+        if current.savedToPhotos { message = "This capture is already saved to Photos."; return }
+        guard exportsInProgress.insert(current.id).inserted else {
+            message = "This capture is already being saved to Photos."; return
+        }
+        defer { exportsInProgress.remove(current.id) }
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard status == .authorized || status == .limited else {
             message = "Saved in the app. Photos permission was not granted; Share still works."; return
@@ -76,22 +84,28 @@ enum MediaFiles {
         do {
             try await PHPhotoLibrary.shared().performChanges {
                 let request = PHAssetCreationRequest.forAsset()
-                request.creationDate = item.created
+                request.creationDate = current.created
                 let options = PHAssetResourceCreationOptions(); options.shouldMoveFile = false
-                request.addResource(with: item.isVideo ? .video : .photo, fileURL: item.url, options: options)
-                if let live = item.liveURL {
-                    request.addResource(with: .pairedVideo, fileURL: live, options: options)
-                }
-                if let raw = item.rawURL {
+                if let raw = current.rawURL {
                     let rawOptions = PHAssetResourceCreationOptions(); rawOptions.uniformTypeIdentifier = "com.adobe.raw-image"
-                    request.addResource(with: .alternatePhoto, fileURL: raw, options: rawOptions)
+                    rawOptions.shouldMoveFile = false
+                    request.addResource(with: .photo, fileURL: raw, options: rawOptions)
+                    request.addResource(with: .alternatePhoto, fileURL: current.url, options: options)
+                } else {
+                    request.addResource(with: current.isVideo ? .video : .photo, fileURL: current.url, options: options)
+                    if let live = current.liveURL {
+                        request.addResource(with: .pairedVideo, fileURL: live, options: options)
+                    }
                 }
             }
-            if let index = items.firstIndex(where: { $0.id == item.id }) { items[index].savedToPhotos = true }
+            if let index = items.firstIndex(where: { $0.id == current.id }) { items[index].savedToPhotos = true }
             persist(); message = nil
         } catch { message = "Saved in the app, but Photos export failed: \(error.localizedDescription)" }
     }
     func deleteLocal(_ item: MediaItem) {
+        guard !exportsInProgress.contains(item.id) else {
+            message = "Wait for this capture to finish saving to Photos before deleting its local copy."; return
+        }
         do {
             for url in [item.url, item.liveURL, item.rawURL].compactMap({ $0 }) {
                 if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }

@@ -24,6 +24,8 @@ Zoom Lock locks the **zoomed framing itself**, not a recognized subject. Core Mo
 
 Horizon and Zoom Lock are WYSIWYG: their preview uses the same live crop/level geometry that drives compatible custom output. **Action Stabilization** and **Smart** intentionally use a preview/output split: the live view stays responsive while the saved frame can use extra gyro correction and safety crop. Native Cinematic, Spatial, high-frame-rate, HDR/Log, ProRes and multichannel modes use AVFoundation's native movie path when required; incompatible custom transforms are disabled or grayed rather than faked.
 
+RAW and Live Photos preserve the native originals. Their DNG, companion still, and paired movie bypass custom crop/rotation rendering; incompatible Horizon/Zoom Lock, crop zoom, aspect ratios, and rendered styles are disabled. A RAW or Live Photo request must produce its requested resources: an unavailable RAW type or missing Live Photo movie reports an error instead of silently saving an ordinary photo.
+
 ## Apple Camera / AVFoundation parity
 
 HorizonCamera does **not** claim to clone Apple's proprietary image-processing algorithms. The table separates features that can be implemented through public capture APIs from stock-Camera behavior that Apple does not expose as a drop-in API.
@@ -48,16 +50,16 @@ HorizonCamera does **not** claim to clone Apple's proprietary image-processing a
 
 | Feature | Status |
 |---|---|
-| Live Photo | ✅ Native paired-photo/movie capture on compatible nonprocessed photo settings |
+| Live Photo | ✅ Native paired-photo/movie capture with both originals preserved; missing movie delivery fails the capture |
 | JPEG / HEIF | ✅ Compatible / efficient output choices |
-| Bayer RAW | ✅ When exposed by the camera |
-| Apple ProRAW | ✅ Preferred independently from Bayer RAW when `isAppleProRAWSupported` reports support |
+| Bayer RAW | ✅ Exact Bayer format when exposed by the camera; no silent processed-photo or ProRAW substitution |
+| Apple ProRAW | ✅ Exact ProRAW format when supported; switching RAW type reconfigures the output and never substitutes Bayer RAW |
 | Photo resolution | ✅ Per-shot choices are generated from the active format's real `supportedMaxPhotoDimensions` (for example 12/24/48 MP where the device exposes them), plus Maximum |
-| Photo quality priority | ✅ Speed / Balanced / Quality |
+| Photo quality priority | ✅ Speed / Balanced / Quality for compatible capture; Bayer RAW uses its required Speed priority |
 | Responsive capture | ✅ Capability-gated |
 | Zero shutter lag | ✅ Capability-gated |
 | Prioritize faster shooting | ✅ Uses AVFoundation fast-capture prioritization when supported |
-| Automatic deferred photo delivery | ✅ Capability-gated |
+| Automatic deferred photo delivery | Unavailable: disabled until a complete PhotoKit proxy-to-final-original workflow is implemented; captures finish processing before local storage |
 | Depth data | ✅ Capture + embedded depth in compatible HEIF/JPEG |
 | Filtered depth | ✅ Toggleable |
 | Portrait Effects matte | ✅ Capture + embed when depth/pipeline support it |
@@ -70,7 +72,7 @@ HorizonCamera does **not** claim to clone Apple's proprietary image-processing a
 | Camera calibration data | ✅ Toggle exposed when the active output configuration actually reports calibration delivery support |
 | Flash | ✅ Off / Auto / On |
 | 3 s / 5 s / 10 s timer | ✅ Top-screen control |
-| Burst lock | ✅ Repeats native still capture as quickly as the real photo output becomes ready; it never invents intermediate captures |
+| Burst lock | ✅ Applies pending capture settings before the first shot, then repeats still capture as the real photo output becomes ready |
 | Output aspect ratios | ✅ 9:16, 16:9, 1:1, 3:4, 4:3, 2:3, 3:2, 4:5, 5:4, 1.85:1 and 2.39:1 on compatible custom paths; native pipelines gray/constrain ratios they cannot actually encode |
 | Smart HDR-like / Night-like / Detail Fusion | ✅ **Approximation** using real AVFoundation exposure brackets, optional OIS during bracket capture, exposure normalization, fusion/noise reduction/highlight-shadow/detail processing |
 | Photographic Styles | ✅ **Approximation** with Standard / Vibrant / Rich Contrast / Warm / Cool / Rose Gold / Muted plus intensity, tone and warmth controls; not Apple's private rendering recipes |
@@ -99,7 +101,7 @@ AVFoundation requires long pipeline reconfiguration for depth and semantic matte
 | Apple Log | ✅ Capability-gated native path with compatible HEVC or ProRes; H.264 is grayed/incompatible |
 | Apple Log 2 | ✅ iOS 26+ when the active format reports it |
 | Native video stabilization | ✅ Off / Standard / Cinematic / Cinematic Extended plus iOS 18/26 modes when the format reports support |
-| Action stabilization | ✅ **Fixed-profile tick**. Custom processing is output-only so preview stays low-latency; native assist prefers low-latency/best-supported public stabilization. Action caps incompatible size/FPS choices at an Apple-like 2.8K/60 envelope |
+| Action stabilization | ✅ **Fixed-profile tick**. Custom processing is output-only so preview stays low-latency; the Native Assist switch controls whether supported public native stabilization is added. Action caps incompatible size/FPS choices at an Apple-like 2.8K/60 envelope |
 | Dual Capture | ✅ Simultaneous front/rear MultiCam composite recorded through the same tested movie writer |
 | Orientation/mirroring metadata track | ✅ Native movie output records changes; portrait/landscape rotation is explicitly configured |
 | Native movie digital zoom | ✅ Ramps the **physical capture device**. The main UI uses one transparent logarithmic zoom rail with snap dots for physical lenses instead of separate preset/Auto buttons |

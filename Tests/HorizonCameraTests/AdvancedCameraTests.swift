@@ -46,9 +46,9 @@ final class AdvancedCameraTests: XCTestCase {
         XCTAssertTrue(s.horizonLock); XCTAssertTrue(s.zoomLock); XCTAssertFalse(s.raw); XCTAssertFalse(s.livePhoto)
         XCTAssertEqual(s.filter,.original); XCTAssertEqual(s.photoFraming,.square)
     }
-    func testConstantColorForcesCompatibleFlashAndDisablesRawLive() {
+    func testConstantColorForcesCompatibleFlashWithoutNativeExtras() {
         var s = CameraSettings(); s.mode = .photo; s.horizonLock = false
-        let old = s; s.constantColor = true; s.raw = true; s.livePhoto = true; s.flash = .off
+        let old = s; s.constantColor = true; s.flash = .off
         s.normalize(changedFrom: old)
         XCTAssertTrue(s.constantColor); XCTAssertFalse(s.raw); XCTAssertFalse(s.livePhoto); XCTAssertEqual(s.flash,.auto)
     }
@@ -134,7 +134,7 @@ final class AdvancedCameraTests: XCTestCase {
 
     func testComputationalPhotoDisablesIncompatibleNativeExtras() {
         var s=CameraSettings(); s.mode = .photo; s.horizonLock=false; let old=s
-        s.computationalPhoto = .autoHDR; s.raw=true; s.livePhoto=true; s.constantColor=true; s.flash = .on; s.depthData=true
+        s.computationalPhoto = .autoHDR; s.constantColor=true; s.flash = .on; s.depthData=true
         s.normalize(changedFrom:old)
         XCTAssertTrue(s.usesBracketedPhotoPipeline); XCTAssertFalse(s.raw); XCTAssertFalse(s.livePhoto); XCTAssertFalse(s.constantColor)
         XCTAssertFalse(s.depthData); XCTAssertEqual(s.flash,.off); XCTAssertTrue(s.isProcessedPhoto)
@@ -188,6 +188,52 @@ final class AdvancedCameraTests: XCTestCase {
         XCTAssertFalse(adjusted.requiresCaptureReconfiguration(comparedTo:action))
         var nativeToggle=adjusted; nativeToggle.actionNativeAssist.toggle()
         XCTAssertFalse(nativeToggle.requiresCaptureReconfiguration(comparedTo:adjusted))
+    }
+
+    func testActionNativeAssistChangesConnectionChoiceWithoutReconfiguration() {
+        let supports: (AVCaptureVideoStabilizationMode) -> Bool = { $0 == .cinematic || $0 == .standard }
+        for locks in [false,true] {
+            var settings=CameraSettings()
+            settings.actionStabilization=true; settings.horizonLock=locks; settings.zoomLock=locks
+            settings.stabilization = .standard
+            let assisted=settings
+            XCTAssertEqual(NativeMovieController.preferredStabilization(settings,supports:supports),.cinematic)
+
+            settings.actionNativeAssist=false
+            XCTAssertEqual(NativeMovieController.preferredStabilization(settings,supports:supports),.off)
+            XCTAssertFalse(settings.requiresCaptureReconfiguration(comparedTo:assisted))
+            XCTAssertFalse(assisted.requiresCaptureReconfiguration(comparedTo:settings))
+        }
+    }
+
+    func testActionNativeAssistPrefersLowLatencyAndRespectsFormatSupport() {
+        var settings=CameraSettings(); settings.actionStabilization=true
+        if #available(iOS 26.0, *) {
+            XCTAssertEqual(NativeMovieController.preferredStabilization(settings,supports:{
+                $0 == .lowLatency || $0 == .cinematicExtended
+            }),.lowLatency)
+        }
+        if #available(iOS 18.0, *) {
+            XCTAssertEqual(NativeMovieController.preferredStabilization(settings,supports:{
+                $0 == .cinematicExtendedEnhanced || $0 == .cinematicExtended
+            }),.cinematicExtendedEnhanced)
+        }
+        XCTAssertEqual(NativeMovieController.preferredStabilization(settings,supports:{ $0 == .standard }),.standard)
+        XCTAssertEqual(NativeMovieController.preferredStabilization(settings,supports:{ _ in false }),.off)
+    }
+
+    func testNativeAssistDoesNotOverrideOrdinaryStabilization() {
+        var settings=CameraSettings()
+        settings.horizonLock=false; settings.zoomLock=false; settings.stabilization = .cinematic
+        for assist in [false,true] {
+            settings.actionNativeAssist=assist
+            XCTAssertEqual(NativeMovieController.preferredStabilization(settings,supports:{ $0 == .cinematic }),.cinematic)
+            XCTAssertEqual(NativeMovieController.preferredStabilization(settings,supports:{ $0 == .standard }),.off)
+        }
+        settings.horizonLock=true
+        XCTAssertEqual(NativeMovieController.preferredStabilization(settings,supports:{ _ in true }),.off)
+        settings.horizonLock=false; settings.zoomLock=true
+        XCTAssertEqual(NativeMovieController.preferredStabilization(settings,supports:{ _ in true }),.off)
     }
 
     func testDolbyVisionProfileForcesHEVCNativePipeline() {
