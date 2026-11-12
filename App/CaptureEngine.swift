@@ -176,7 +176,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                         connection.preferredVideoStabilizationMode = NativeMovieController.preferredStabilization(settings,format:device.activeFormat)
                     }
                     configuration = settings
-                    frameQueue.sync { [self] in processor.configure(settings, front: device.position == .front, horizontalFOVDegrees: Double(device.activeFormat.videoFieldOfView)) }
+                    frameQueue.sync { [self] in self.processor.configure(settings, front: device.position == .front, horizontalFOVDegrees: Double(device.activeFormat.videoFieldOfView)) }
                     if #available(iOS 18.0, *) {
                         if old.manualFocus != settings.manualFocus {
                             configureCameraControls(settings,device:device)
@@ -724,76 +724,112 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
 
     func capturePhoto(expectedSettings: CameraSettings) {
-        sessionQueue.async { [self] in
-            guard state == .ready, let device = videoInput?.device else { return }
+        sessionQueue.async { [self] in capturePhotoOnSessionQueue(expectedSettings) }
+    }
+
+    private func capturePhotoOnSessionQueue(_ expectedSettings: CameraSettings) {
+        guard state == .ready, let device = videoInput?.device else { return }
+        do {
+            try requireConfiguration(expectedSettings)
+            try MediaFiles.requireSpace()
+            let config = configuration
+            let plan = try PhotoCapturePlan(settings: config, availableCodecs: photoOutput.availablePhotoCodecTypes,
+                rawFormats: photoOutput.availableRawPhotoPixelFormatTypes,
+                livePhotoEnabled: photoOutput.isLivePhotoCaptureEnabled,
+                livePhotoSuspended: photoOutput.isLivePhotoCaptureSuspended)
+            if config.usesBracketedPhotoPipeline {
+                try captureComputationalPhoto(config, codec: plan.codec)
+                return
+            }
+            let settings = try makePhotoSettings(config, device: device, plan: plan)
+            let id = settings.uniqueID
+            let delegate = PhotoCapture(id: id, settings: config, liveURL: settings.livePhotoMovieFileURL) { [weak self] result in
+                self?.finishPhotoCapture(result, id: id)
+            }
+            photoJobs[id] = delegate
+            setState(.takingPhoto)
+            photoOutput.capturePhoto(with: settings, delegate: delegate)
+        } catch {
+            report(error.localizedDescription)
+            setState(wantedRunning ? .ready : .stopped)
+        }
+    }
+
+    private func makePhotoSettings(_ config: CameraSettings, device: AVCaptureDevice,
+                                   plan: PhotoCapturePlan) throws -> AVCapturePhotoSettings {
+        let format: [String: Any] = [AVVideoCodecKey: plan.codec]
+        let settings: AVCapturePhotoSettings
+        if let raw = plan.rawPixelFormat {
+            let connectionScale = photoOutput.connection(with: .video)?.videoScaleAndCropFactor ?? 1
+            guard device.videoZoomFactor == 1, connectionScale == 1 else {
+                throw CameraFailure.message("RAW requires the lens's native framing. Reset zoom before capturing.")
+            }
+            settings = AVCapturePhotoSettings(rawPixelFormatType: raw, processedFormat: format)
+        } else {
+            settings = AVCapturePhotoSettings(format: format)
+        }
+        settings.photoQualityPrioritization = plan.qualityPrioritization
+        settings.maxPhotoDimensions = photoDimensions(for: config, device: device)
+        settings.metadata = CaptureMetadata.photo(config)
+        settings.isAutoRedEyeReductionEnabled = config.autoRedEyeReduction && photoOutput.isAutoRedEyeReductionSupported
+        settings.isAutoContentAwareDistortionCorrectionEnabled = config.contentAwareDistortionCorrection && photoOutput.isContentAwareDistortionCorrectionEnabled && !config.raw
+        settings.isAutoVirtualDeviceFusionEnabled = config.virtualDeviceFusion && photoOutput.isVirtualDeviceFusionSupported
+        settings.isCameraCalibrationDataDeliveryEnabled = config.cameraCalibrationData && photoOutput.isCameraCalibrationDataDeliverySupported
+        settings.isDepthDataDeliveryEnabled = config.depthData && photoOutput.isDepthDataDeliveryEnabled && !config.raw
+        settings.embedsDepthDataInPhoto = settings.isDepthDataDeliveryEnabled
+        settings.isDepthDataFiltered = config.depthDataFiltered
+        settings.isPortraitEffectsMatteDeliveryEnabled = config.portraitEffectsMatte && photoOutput.isPortraitEffectsMatteDeliveryEnabled && !config.raw
+        settings.embedsPortraitEffectsMatteInPhoto = settings.isPortraitEffectsMatteDeliveryEnabled
+        settings.enabledSemanticSegmentationMatteTypes = config.semanticMattes && !config.raw ? photoOutput.enabledSemanticSegmentationMatteTypes : []
+        settings.embedsSemanticSegmentationMattesInPhoto = !settings.enabledSemanticSegmentationMatteTypes.isEmpty
+        if #available(iOS 18.0, *) {
+            settings.isConstantColorEnabled = config.constantColor && photoOutput.isConstantColorEnabled && !config.raw
+            settings.isConstantColorFallbackPhotoDeliveryEnabled = settings.isConstantColorEnabled && config.constantColorFallback
+        }
+        if device.hasFlash { settings.flashMode = config.flash.avMode }
+        if plan.livePhoto {
+            settings.livePhotoMovieFileURL = try MediaFiles.newURL(extension: "mov")
+            settings.livePhotoMovieMetadata = NativeMovieController.movieMetadata(config)
+        }
+        return settings
+    }
+
+    private static func photoPixelCount(_ dimensions: CMVideoDimensions) -> Int64 {
+        Int64(dimensions.width) * Int64(dimensions.height)
+    }
+
+    private func photoDimensions(for config: CameraSettings, device: AVCaptureDevice) -> CMVideoDimensions {
+        let maximum = photoOutput.maxPhotoDimensions
+        let maximumPixels = Self.photoPixelCount(maximum)
+        let valid: [CMVideoDimensions] = device.activeFormat.supportedMaxPhotoDimensions.filter { dimensions in
+            Self.photoPixelCount(dimensions) <= maximumPixels
+        }
+        if config.photoResolutionMP > 0 {
+            let requestedMP = Double(config.photoResolutionMP)
+            return valid.min { left, right in
+                let leftMP = Double(Self.photoPixelCount(left)) / 1_000_000.0
+                let rightMP = Double(Self.photoPixelCount(right)) / 1_000_000.0
+                let leftDistance = abs(leftMP - requestedMP)
+                let rightDistance = abs(rightMP - requestedMP)
+                return leftDistance < rightDistance
+            } ?? maximum
+        }
+        return valid.max { left, right in
+            Self.photoPixelCount(left) < Self.photoPixelCount(right)
+        } ?? maximum
+    }
+
+    private func finishPhotoCapture(_ result: Result<PhotoPacket, Error>, id: Int64) {
+        frameQueue.async { [self] in
             do {
-                try requireConfiguration(expectedSettings)
-                try MediaFiles.requireSpace()
-                let config = configuration
-                let plan = try PhotoCapturePlan(settings: config, availableCodecs: photoOutput.availablePhotoCodecTypes,
-                    rawFormats: photoOutput.availableRawPhotoPixelFormatTypes,
-                    livePhotoEnabled: photoOutput.isLivePhotoCaptureEnabled,
-                    livePhotoSuspended: photoOutput.isLivePhotoCaptureSuspended)
-                let codec = plan.codec
-                if config.usesBracketedPhotoPipeline { try captureComputationalPhoto(config,codec:codec); return }
-                let settings: AVCapturePhotoSettings
-                if let raw = plan.rawPixelFormat {
-                    guard device.videoZoomFactor == 1,
-                          (photoOutput.connection(with: .video)?.videoScaleAndCropFactor ?? 1) == 1 else {
-                        throw CameraFailure.message("RAW requires the lens's native framing. Reset zoom before capturing.")
-                    }
-                    settings = AVCapturePhotoSettings(rawPixelFormatType:raw,processedFormat:[AVVideoCodecKey:codec])
-                } else { settings = AVCapturePhotoSettings(format:[AVVideoCodecKey:codec]) }
-                settings.photoQualityPrioritization = plan.qualityPrioritization
-                let validDimensions = device.activeFormat.supportedMaxPhotoDimensions.filter {
-                    Int64($0.width) * Int64($0.height) <= Int64(photoOutput.maxPhotoDimensions.width) * Int64(photoOutput.maxPhotoDimensions.height)
-                }
-                if config.photoResolutionMP > 0, let selected = validDimensions.min(by: {
-                    abs(Double($0.width)*Double($0.height)/1_000_000-Double(config.photoResolutionMP)) <
-                    abs(Double($1.width)*Double($1.height)/1_000_000-Double(config.photoResolutionMP))
-                }) { settings.maxPhotoDimensions = selected }
-                else { settings.maxPhotoDimensions = validDimensions.max(by: { Int64($0.width)*Int64($0.height) < Int64($1.width)*Int64($1.height) }) ?? photoOutput.maxPhotoDimensions }
-                settings.metadata = CaptureMetadata.photo(config)
-                settings.isAutoRedEyeReductionEnabled = config.autoRedEyeReduction && photoOutput.isAutoRedEyeReductionSupported
-                settings.isAutoContentAwareDistortionCorrectionEnabled = config.contentAwareDistortionCorrection && photoOutput.isContentAwareDistortionCorrectionEnabled && !config.raw
-                settings.isAutoVirtualDeviceFusionEnabled = config.virtualDeviceFusion && photoOutput.isVirtualDeviceFusionSupported
-                settings.isCameraCalibrationDataDeliveryEnabled = config.cameraCalibrationData && photoOutput.isCameraCalibrationDataDeliverySupported
-                settings.isDepthDataDeliveryEnabled = config.depthData && photoOutput.isDepthDataDeliveryEnabled && !config.raw
-                settings.embedsDepthDataInPhoto = settings.isDepthDataDeliveryEnabled
-                settings.isDepthDataFiltered = config.depthDataFiltered
-                settings.isPortraitEffectsMatteDeliveryEnabled = config.portraitEffectsMatte && photoOutput.isPortraitEffectsMatteDeliveryEnabled && !config.raw
-                settings.embedsPortraitEffectsMatteInPhoto = settings.isPortraitEffectsMatteDeliveryEnabled
-                settings.enabledSemanticSegmentationMatteTypes = config.semanticMattes && !config.raw ? photoOutput.enabledSemanticSegmentationMatteTypes : []
-                settings.embedsSemanticSegmentationMattesInPhoto = !settings.enabledSemanticSegmentationMatteTypes.isEmpty
-                if #available(iOS 18.0, *) {
-                    settings.isConstantColorEnabled = config.constantColor && photoOutput.isConstantColorEnabled && !config.raw
-                    settings.isConstantColorFallbackPhotoDeliveryEnabled = settings.isConstantColorEnabled && config.constantColorFallback
-                }
-                if device.hasFlash { settings.flashMode = config.flash.avMode }
-                var liveURL: URL?
-                if plan.livePhoto {
-                    liveURL = try MediaFiles.newURL(extension:"mov"); settings.livePhotoMovieFileURL = liveURL
-                    settings.livePhotoMovieMetadata = NativeMovieController.movieMetadata(config)
-                }
-                let id = settings.uniqueID
-                let delegate = PhotoCapture(id:id,settings:config,liveURL:liveURL) { [weak self] result in
-                    guard let self else { return }
-                    self.frameQueue.async { [self] in
-                        do {
-                            let packet = try result.get()
-                            let draft = try self.savePhoto(packet)
-                            self.deliver(.success(draft))
-                        } catch { self.deliver(.failure(error)) }
-                        self.sessionQueue.async { [self] in
-                            self.photoJobs.removeValue(forKey:id)
-                            self.setState(self.wantedRunning ? .ready : .stopped)
-                        }
-                    }
-                }
-                photoJobs[id] = delegate
-                setState(.takingPhoto)
-                photoOutput.capturePhoto(with:settings,delegate:delegate)
-            } catch { report(error.localizedDescription); setState(wantedRunning ? .ready : .stopped) }
+                let packet = try result.get()
+                let draft = try savePhoto(packet)
+                deliver(.success(draft))
+            } catch { deliver(.failure(error)) }
+            sessionQueue.async { [self] in
+                self.photoJobs.removeValue(forKey: id)
+                self.setState(self.wantedRunning ? .ready : .stopped)
+            }
         }
     }
     func savePhoto(_ packet: PhotoPacket) throws -> MediaDraft {
