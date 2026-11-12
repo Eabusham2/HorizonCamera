@@ -139,7 +139,12 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(CMBlockBufferCreateWithMemoryBlock(allocator:kCFAllocatorDefault,memoryBlock:nil,
             blockLength:count*4,blockAllocator:kCFAllocatorDefault,customBlockSource:nil,offsetToData:0,
             dataLength:count*4,flags:0,blockBufferOut:&block),noErr)
-        let data = (0..<count).map { sample in Float(sin(Double(index*count+sample)*2 * .pi*440/48000)*0.2) }
+        let data: [Float] = (0..<count).map { (sample: Int) -> Float in
+            let sampleIndex = index * count + sample
+            let position = Double(sampleIndex)
+            let phase: Double = position * 2.0 * Double.pi * 440.0 / 48_000.0
+            return Float(sin(phase) * 0.2)
+        }
         let status = data.withUnsafeBytes { bytes in
             CMBlockBufferReplaceDataBytes(with:bytes.baseAddress!,blockBuffer:block!,offsetIntoDestination:0,dataLength:bytes.count)
         }
