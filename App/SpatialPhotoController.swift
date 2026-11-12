@@ -16,7 +16,10 @@ final class SpatialPhotoController: NSObject, AVCaptureVideoDataOutputSampleBuff
     private var renderer: ImageRenderer?
     private var settings = CameraSettings()
     private var completion: ((Result<MediaDraft,Error>)->Void)?
-    private var finished = false
+    private var requestID: UUID?
+    // Sample-buffer state is confined to queue; request/session state to sessionQueue.
+    private var frameRequestID: UUID?
+    private var finished = true
 
     static var isSupported: Bool {
         guard #available(iOS 18.0,*), AVCaptureMultiCamSession.isMultiCamSupported else { return false }
@@ -31,13 +34,39 @@ final class SpatialPhotoController: NSObject, AVCaptureVideoDataOutputSampleBuff
         sessionQueue.async { [weak self] in
             guard let self else { return }
             guard #available(iOS 18.0,*) else { DispatchQueue.main.async { completion(.failure(CameraFailure.message("Spatial Photo requires iOS 18 or later."))) }; return }
+            guard self.completion == nil else {
+                DispatchQueue.main.async { completion(.failure(CameraFailure.message("A spatial photo is already being captured."))) }; return
+            }
+            let requestID = UUID()
+            self.completion = completion
+            self.requestID = requestID
+            self.settings = settings
             do {
+                self.resetSessionGraph()
+                guard settings.codec == .efficient else {
+                    throw CameraFailure.message("Spatial Photo requires HEIF to preserve the stereo image pair. Choose HEVC / HEIF encoding.")
+                }
                 try MediaFiles.requireSpace()
-                self.renderer=renderer; self.settings=settings; self.completion=completion; self.finished=false
+                self.queue.sync {
+                    self.renderer = renderer
+                    self.frameRequestID = requestID
+                    self.finished = false
+                }
                 try self.configure()
                 self.session.startRunning()
                 guard self.session.isRunning else { throw CameraFailure.message("The stereo MultiCam session could not start.") }
+                self.sessionQueue.asyncAfter(deadline: .now() + 10) { [weak self] in
+                    guard let self, self.requestID == requestID, self.completion != nil else { return }
+                    self.complete(.failure(CameraFailure.message("The stereo cameras did not deliver a synchronized photo in time. Try again.")))
+                }
             } catch { self.fail(error) }
+        }
+    }
+
+    func cancel() {
+        sessionQueue.async { [weak self] in
+            guard let self, self.completion != nil else { return }
+            self.complete(.failure(CameraFailure.message("Spatial Photo was cancelled.")))
         }
     }
 
@@ -52,8 +81,10 @@ final class SpatialPhotoController: NSObject, AVCaptureVideoDataOutputSampleBuff
         session.beginConfiguration(); defer { session.commitConfiguration() }
         try configureDevice(pair.0); try configureDevice(pair.1)
         let li=try AVCaptureDeviceInput(device:pair.0), ri=try AVCaptureDeviceInput(device:pair.1)
-        guard session.canAddInput(li),session.canAddInput(ri) else { throw CameraFailure.message("This iPhone cannot run the selected rear cameras simultaneously.") }
-        session.addInputWithNoConnections(li); session.addInputWithNoConnections(ri)
+        guard session.canAddInput(li) else { throw CameraFailure.message("This iPhone cannot add the first stereo camera.") }
+        session.addInputWithNoConnections(li)
+        guard session.canAddInput(ri) else { throw CameraFailure.message("This iPhone cannot run the selected rear cameras simultaneously.") }
+        session.addInputWithNoConnections(ri)
         for output in [leftOutput,rightOutput] {
             output.alwaysDiscardsLateVideoFrames=true
             output.videoSettings=[kCVPixelBufferPixelFormatTypeKey as String:kCVPixelFormatType_420YpCbCr8BiPlanarFullRange]
@@ -86,7 +117,8 @@ final class SpatialPhotoController: NSObject, AVCaptureVideoDataOutputSampleBuff
     private func configureDevice(_ device: AVCaptureDevice) throws {
         let formats=device.formats.filter { f in
             let d=CMVideoFormatDescriptionGetDimensions(f.formatDescription)
-            return d.width >= 1280 && d.width <= 1920 && d.height >= 720 && f.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= 30 && $0.maxFrameRate >= 30 }
+            return f.isMultiCamSupported && d.width >= 1280 && d.width <= 1920 && d.height >= 720 &&
+                f.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= 30 && $0.maxFrameRate >= 30 }
         }.sorted { a,b in
             let da=CMVideoFormatDescriptionGetDimensions(a.formatDescription),db=CMVideoFormatDescriptionGetDimensions(b.formatDescription)
             return abs(Int(da.width)-1280)+abs(Int(da.height)-720) < abs(Int(db.width)-1280)+abs(Int(db.height)-720)
@@ -105,7 +137,8 @@ final class SpatialPhotoController: NSObject, AVCaptureVideoDataOutputSampleBuff
     }
 
     func captureOutput(_ output: AVCaptureOutput,didOutput sampleBuffer: CMSampleBuffer,from connection: AVCaptureConnection) {
-        guard !finished,let buffer=CMSampleBufferGetImageBuffer(sampleBuffer),let renderer else { return }
+        guard !finished, let requestID = frameRequestID,
+              let buffer=CMSampleBufferGetImageBuffer(sampleBuffer),let renderer else { return }
         var image=CIImage(cvPixelBuffer:buffer).transformed(by:CGAffineTransform(translationX:-CIImage(cvPixelBuffer:buffer).extent.minX,y:-CIImage(cvPixelBuffer:buffer).extent.minY))
         let maxW:CGFloat=1280
         if image.extent.width > maxW { let scale=maxW/image.extent.width; image=image.applyingFilter("CILanczosScaleTransform",parameters:[kCIInputScaleKey:scale,kCIInputAspectRatioKey:1.0]) }
@@ -115,17 +148,18 @@ final class SpatialPhotoController: NSObject, AVCaptureVideoDataOutputSampleBuff
         guard let leftImage,let rightImage,leftPTS.isValid,rightPTS.isValid,abs(leftPTS.seconds-rightPTS.seconds) < 0.08 else { return }
         finished=true
         let left=leftImage,right=rightImage
-        sessionQueue.async { [weak self] in self?.finish(left:left,right:right) }
+        sessionQueue.async { [weak self] in self?.finish(left:left,right:right,requestID:requestID) }
     }
 
-    private func finish(left:CGImage,right:CGImage) {
+    private func finish(left:CGImage,right:CGImage,requestID:UUID) {
+        guard self.requestID == requestID, completion != nil else { return }
         session.stopRunning()
         do {
             guard #available(iOS 18.0,*),let ld=leftDevice,let rd=rightDevice,let raw=AVCaptureDevice.extrinsicMatrix(from:ld,to:rd),let extrinsic=decodeExtrinsic(raw) else {
                 throw CameraFailure.message("Factory stereo calibration became unavailable.")
             }
             let target=CGSize(width:min(left.width,right.width),height:min(left.height,right.height))
-            guard let renderer else { throw CameraFailure.message("Spatial Photo renderer is unavailable.") }
+            guard let renderer = queue.sync(execute: { self.renderer }) else { throw CameraFailure.message("Spatial Photo renderer is unavailable.") }
             let commonFOV=Double(min(ld.activeFormat.videoFieldOfView,rd.activeFormat.videoFieldOfView))
             let l=try normalize(CGImage:left,sourceFOV:Double(ld.activeFormat.videoFieldOfView),targetFOV:commonFOV,to:target,renderer:renderer)
             let r=try normalize(CGImage:right,sourceFOV:Double(rd.activeFormat.videoFieldOfView),targetFOV:commonFOV,to:target,renderer:renderer)
@@ -136,8 +170,8 @@ final class SpatialPhotoController: NSObject, AVCaptureVideoDataOutputSampleBuff
             let data=try SpatialPhotoEncoder.encode(left:l,right:r,commonFOV:commonFOV,rightPosition:rightPosition,rightRotation:rightRotation,settings:settings)
             let url=try MediaFiles.newURL(extension:"heic"); try data.write(to:url,options:.atomic)
             let baseline=simd_length(extrinsic.columns.3)
-            DispatchQueue.main.async { [weak self] in self?.complete(.success(MediaDraft(url:url,isVideo:false,summary:String(format:"Spatial Photo · stereo HEIC · factory baseline %.1f mm",baseline)))) }
-        } catch { DispatchQueue.main.async { [weak self] in self?.complete(.failure(error)) } }
+            complete(.success(MediaDraft(url:url,isVideo:false,summary:String(format:"Spatial Photo · stereo HEIC · factory baseline %.1f mm",baseline))))
+        } catch { complete(.failure(error)) }
     }
 
     private func normalize(CGImage cg:CGImage,sourceFOV:Double,targetFOV:Double,to size:CGSize,renderer:ImageRenderer) throws -> CGImage {
@@ -163,6 +197,36 @@ final class SpatialPhotoController: NSObject, AVCaptureVideoDataOutputSampleBuff
         return matrix
     }
 
-    private func fail(_ error:Error) { if session.isRunning { session.stopRunning() }; DispatchQueue.main.async { [weak self] in self?.complete(.failure(error)) } }
-    private func complete(_ result:Result<MediaDraft,Error>) { completion?(result); completion=nil; leftImage=nil; rightImage=nil; leftDevice=nil; rightDevice=nil; renderer=nil }
+    /// Called only on sessionQueue, with no synchronous calls back from the frame queue.
+    private func resetSessionGraph() {
+        if session.isRunning { session.stopRunning() }
+        leftOutput.setSampleBufferDelegate(nil, queue: nil)
+        rightOutput.setSampleBufferDelegate(nil, queue: nil)
+        queue.sync {
+            self.finished = true
+            self.frameRequestID = nil
+            self.leftImage = nil
+            self.rightImage = nil
+            self.leftPTS = .invalid
+            self.rightPTS = .invalid
+            self.renderer = nil
+        }
+        session.beginConfiguration()
+        for connection in session.connections { session.removeConnection(connection) }
+        for output in session.outputs { session.removeOutput(output) }
+        for input in session.inputs { session.removeInput(input) }
+        session.commitConfiguration()
+        leftDevice = nil
+        rightDevice = nil
+    }
+
+    private func fail(_ error:Error) { complete(.failure(error)) }
+
+    private func complete(_ result:Result<MediaDraft,Error>) {
+        guard let completion else { return }
+        self.completion = nil
+        requestID = nil
+        resetSessionGraph()
+        DispatchQueue.main.async { completion(result) }
+    }
 }

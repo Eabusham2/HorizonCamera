@@ -217,6 +217,56 @@ final class CaptureSafetyTests: XCTestCase {
         }
     }
 
+    func testFailedReconfigurationCannotCaptureThePreviousFormat() {
+        let applied = photoSettings()
+        XCTAssertNoThrow(try CaptureEngine.validateConfiguration(applied, applied: applied))
+        for isRAW in [false, true] {
+            let requested = photoSettings(raw: isRAW, live: !isRAW)
+            XCTAssertThrowsError(try CaptureEngine.validateConfiguration(requested, applied: applied))
+        }
+        var requested = photoSettings(raw: true)
+        var previousRAW = requested
+        previousRAW.preferProRAW = false
+        XCTAssertThrowsError(try CaptureEngine.validateConfiguration(requested, applied: previousRAW))
+        requested = applied; requested.photoFraming = .square
+        XCTAssertThrowsError(try CaptureEngine.validateConfiguration(requested, applied: applied))
+        requested = applied; requested.codec = .compatible
+        XCTAssertThrowsError(try CaptureEngine.validateConfiguration(requested, applied: applied))
+        requested = applied; requested.manualExposure = true; requested.iso = 800
+        XCTAssertThrowsError(try CaptureEngine.validateConfiguration(requested, applied: applied))
+    }
+
+    func testRequestedHDRAndLogCannotUseAnSDROnlyFormat() {
+        var settings = CameraSettings()
+        XCTAssertTrue(CaptureEngine.supportsRequestedColor(settings, colorSpaces: [.sRGB]))
+        for profile: VideoColorProfile in [.hdrHLG, .dolbyVision84, .appleLog, .appleLog2] {
+            settings.colorProfile = profile
+            XCTAssertFalse(CaptureEngine.supportsRequestedColor(settings, colorSpaces: [.sRGB]))
+            if let color = profile.captureColorSpace {
+                XCTAssertTrue(CaptureEngine.supportsRequestedColor(settings, colorSpaces: [.sRGB, color]))
+            }
+        }
+        settings.colorProfile = .appleLog2
+        XCTAssertFalse(CaptureEngine.supportsRequestedColor(settings, colorSpaces: [.appleLog]))
+        settings.codec = .proResRAW; settings.colorProfile = .sdr
+        XCTAssertTrue(CaptureEngine.supportsRequestedColor(settings, colorSpaces: []))
+    }
+
+    func testComputationalPhotoRequiresEveryRequestedNonemptyFrame() {
+        let settings = photoSettings()
+        let full = BracketPhotoPacket(images: [Data([1]), Data([2]), Data([3])],
+            timestamps: [.zero, .zero, .zero], settings: settings)
+        XCTAssertNoThrow(try full.validate(expectedFrameCount: 3))
+        XCTAssertThrowsError(try full.validate(expectedFrameCount: 5))
+        XCTAssertThrowsError(try full.validate(expectedFrameCount: 2))
+        let missing = BracketPhotoPacket(images: [Data([1]), Data([2])], timestamps: [.zero, .zero], settings: settings)
+        XCTAssertThrowsError(try missing.validate(expectedFrameCount: 3))
+        let empty = BracketPhotoPacket(images: [Data([1]), Data(), Data([3])], timestamps: [.zero, .zero, .zero], settings: settings)
+        XCTAssertThrowsError(try empty.validate(expectedFrameCount: 3))
+        let timestamps = BracketPhotoPacket(images: full.images, timestamps: [.zero], settings: settings)
+        XCTAssertThrowsError(try timestamps.validate(expectedFrameCount: 3))
+    }
+
     private func addCustomTransforms(to settings: inout CameraSettings) {
         settings.horizonLock = true
         settings.zoomLock = true

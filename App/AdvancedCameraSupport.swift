@@ -156,19 +156,18 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                 }
                 if #available(iOS 18.0, *), device.activeFormat.isAutoVideoFrameRateSupported { device.isAutoVideoFrameRateEnabled = settings.autoFPS }
                 if !settings.codec.isProResRAW {
-                    let desiredColor:AVCaptureColorSpace
-                    switch settings.colorProfile {
-                    case .sdr:desiredColor = .sRGB
-                    case .hdrHLG,.dolbyVision84:desiredColor = .HLG_BT2020
-                    case .appleLog:desiredColor = .appleLog
-                    case .appleLog2:
-                        if #available(iOS 26.0, *) { desiredColor = .appleLog2 } else { desiredColor = .appleLog }
+                    guard let desiredColor = settings.colorProfile.captureColorSpace,
+                          device.activeFormat.supportedColorSpaces.contains(desiredColor) else {
+                        throw CameraFailure.message("The active camera format does not support \(settings.colorProfile.rawValue).")
                     }
-                    if device.activeFormat.supportedColorSpaces.contains(desiredColor) { device.activeColorSpace=desiredColor }
+                    device.activeColorSpace=desiredColor
                     device.automaticallyAdjustsVideoHDREnabled=false
                     if device.activeFormat.isVideoHDRSupported { device.isVideoHDREnabled=settings.colorProfile.isHDR }
                 }
-            } catch { }
+            } catch {
+                DispatchQueue.main.async { engine.onError?(error.localizedDescription) }
+                return
+            }
             if device.activeFormat.isCenterStageSupported {
                 AVCaptureDevice.centerStageControlMode = .cooperative
                 AVCaptureDevice.isCenterStageEnabled = settings.centerStage && !settings.preservesNativePhotoOriginals
@@ -228,8 +227,23 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
     func start(engine: CaptureEngine, settings: CameraSettings, stateChanged: @escaping (Bool) -> Void, completion: @escaping (Result<MediaDraft, Error>) -> Void) {
         engine.sessionQueue.async { [weak self] in
             guard let self else { return }
-            guard self.output?.isRecording != true else { return }
+            guard self.completion == nil, self.output?.isRecording != true else {
+                DispatchQueue.main.async { completion(.failure(CameraFailure.message("The previous native recording is still active or finishing."))) }
+                return
+            }
+            var ownedURL: URL?
+            var setupMovie: AVCaptureMovieFileOutput?
+            var setupMetadata: AVCaptureMetadataOutput?
             do {
+                try engine.requireConfiguration(settings)
+                guard settings.mode != .spatial || settings.codec == .efficient else {
+                    throw CameraFailure.message("Spatial Video requires HEVC encoding. Choose HEVC / HEIF before recording.")
+                }
+                if settings.codec.isProResRAW {
+                    guard #available(iOS 26.0, *) else {
+                        throw CameraFailure.message("ProRes RAW recording requires iOS 26 or later.")
+                    }
+                }
                 try MediaFiles.requireSpace()
                 let session = engine.session
                 guard let videoInput = session.inputs.compactMap({ $0 as? AVCaptureDeviceInput }).first(where: { $0.ports.contains(where: { $0.mediaType == .video }) }) else { throw CameraFailure.message("No active video input is available.") }
@@ -242,11 +256,13 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                     movie = candidate
                 }
                 guard let movie else { session.commitConfiguration(); throw CameraFailure.message("Native movie output is unavailable.") }
+                setupMovie = movie
                 var metadata = session.outputs.compactMap({ $0 as? AVCaptureMetadataOutput }).first
                 if settings.mode == .cinematic && metadata == nil {
                     let candidate = AVCaptureMetadataOutput()
                     if session.canAddOutput(candidate) { session.addOutput(candidate); metadata = candidate }
                 }
+                setupMetadata = metadata
                 if #available(iOS 26.0, *) {
                     if settings.mode == .cinematic {
                         guard videoInput.isCinematicVideoCaptureSupported, let metadata else { session.commitConfiguration(); throw CameraFailure.message("Cinematic Video is not supported by this lens/format.") }
@@ -271,7 +287,17 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                 }
                 session.commitConfiguration()
 
-                if let connection = movie.connection(with: .video) {
+                if !settings.codec.isProResRAW {
+                    guard let desiredColor = settings.colorProfile.captureColorSpace,
+                          videoInput.device.activeFormat.supportedColorSpaces.contains(desiredColor),
+                          videoInput.device.activeColorSpace == desiredColor else {
+                        throw CameraFailure.message("The requested \(settings.colorProfile.rawValue) profile is not active. Re-select the format before recording.")
+                    }
+                }
+                guard let connection = movie.connection(with: .video) else {
+                    throw CameraFailure.message("The native movie output has no video connection.")
+                }
+                do {
                     if connection.isVideoStabilizationSupported { connection.preferredVideoStabilizationMode = Self.preferredStabilization(settings,format:videoInput.device.activeFormat) }
                     let rotation: CGFloat = settings.videoFraming == .portrait ? 90 : 0
                     if connection.isVideoRotationAngleSupported(rotation) { connection.videoRotationAngle = rotation }
@@ -303,36 +329,99 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
                     }
                 }
                 movie.metadata = Self.movieMetadata(settings)
+                let url = try MediaFiles.newURL(extension: "mov")
+                ownedURL = url
                 self.engine = engine
                 self.output = movie
                 self.metadataOutput = metadata
                 self.settings = settings
                 self.stateChanged = stateChanged
                 self.completion = completion
-                let url = try MediaFiles.newURL(extension: "mov")
                 self.destination = url
                 movie.startRecording(to: url, recordingDelegate: self)
                 DispatchQueue.main.async { stateChanged(true) }
             } catch {
+                if setupMovie != nil {
+                    Self.resetNativeSession(engine: engine, movie: setupMovie, metadata: setupMetadata, settings: settings)
+                }
+                if let ownedURL { try? FileManager.default.removeItem(at: ownedURL) }
                 DispatchQueue.main.async { completion(.failure(error)) }
             }
         }
     }
 
-    func stop() { output?.stopRecording() }
+    func stop() {
+        engine?.sessionQueue.async { [weak self] in self?.output?.stopRecording() }
+    }
+
+    /// Only call on engine.sessionQueue, after capture has stopped or setup failed.
+    private static func resetNativeSession(engine: CaptureEngine, movie: AVCaptureMovieFileOutput?,
+                                           metadata: AVCaptureMetadataOutput?, settings: CameraSettings) {
+        let session = engine.session
+        session.beginConfiguration()
+        defer { session.commitConfiguration() }
+        if #available(iOS 26.0, *) {
+            for input in session.inputs.compactMap({ $0 as? AVCaptureDeviceInput })
+                where input.ports.contains(where: { $0.mediaType == .video }) && input.isCinematicVideoCaptureEnabled {
+                input.isCinematicVideoCaptureEnabled = false
+            }
+        }
+        if #available(iOS 18.0, *), let movie, movie.isSpatialVideoCaptureEnabled {
+            movie.isSpatialVideoCaptureEnabled = false
+        }
+        if let metadata {
+            metadata.metadataObjectTypes = settings.scanQRCodes && metadata.availableMetadataObjectTypes.contains(.qr) ? [.qr] : []
+        }
+        if let movie, session.outputs.contains(where: { $0 === movie }) {
+            session.removeOutput(movie)
+        }
+    }
 
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
         let completion = self.completion
         let stateChanged = self.stateChanged
-        self.completion = nil
-        self.stateChanged = nil
-        DispatchQueue.main.async { stateChanged?(false) }
-        if let error {
-            try? FileManager.default.removeItem(at: outputFileURL)
-            DispatchQueue.main.async { completion?(.failure(error)) }
-        } else {
-            let summary = "Native \(settings.mode.rawValue) · \(settings.codec.rawValue) · \(settings.colorProfile.rawValue) · \(settings.audioMode.rawValue)"
-            DispatchQueue.main.async { completion?(.success(MediaDraft(url: outputFileURL, isVideo: true, summary: summary))) }
+        let recordingSettings = settings
+        let recordingEngine = engine
+        let recordingMovie = self.output
+        let recordingMetadata = metadataOutput
+        Task {
+            let result = await Self.finalizeRecording(at: outputFileURL, error: error)
+            let summary = "Native \(recordingSettings.mode.rawValue) · \(recordingSettings.codec.rawValue) · \(recordingSettings.colorProfile.rawValue) · \(recordingSettings.audioMode.rawValue)"
+            let finish = { [self] in
+                if let recordingEngine {
+                    Self.resetNativeSession(engine: recordingEngine, movie: recordingMovie, metadata: recordingMetadata, settings: recordingSettings)
+                }
+                self.output = nil; self.metadataOutput = nil; self.engine = nil
+                self.destination = nil; self.completion = nil; self.stateChanged = nil
+                DispatchQueue.main.async {
+                    stateChanged?(false)
+                    completion?(result.map { MediaDraft(url: $0, isVideo: true, summary: summary) })
+                }
+            }
+            if let recordingEngine { recordingEngine.sessionQueue.async(execute: finish) }
+            else { finish() }
+        }
+    }
+
+    static func finalizeRecording(at url: URL, error: Error?) async -> Result<URL, Error> {
+        do {
+            if let error, (error as NSError).userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool != true {
+                throw error
+            }
+            let resource = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard resource.isRegularFile == true, (resource.fileSize ?? 0) > 0 else {
+                throw CameraFailure.message("The camera did not finish a movie file.")
+            }
+            let asset = AVURLAsset(url: url)
+            let duration = try await asset.load(.duration)
+            let videos = try await asset.loadTracks(withMediaType: .video)
+            guard duration.isValid, duration.seconds.isFinite, duration.seconds > 0, !videos.isEmpty else {
+                throw CameraFailure.message("The camera did not finish a playable video track.")
+            }
+            return .success(url)
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            return .failure(error)
         }
     }
 

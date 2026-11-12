@@ -12,11 +12,15 @@ final class DualCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuffe
     private let audioOutput = AVCaptureAudioDataOutput()
     private var renderer: ImageRenderer?
     private var recorder: MovieRecorder?
+    private var finishingRecorder: MovieRecorder?
     private var latestFront: CGImage?
     private var latestFrontPTS: CMTime = .invalid
     private var settings = CameraSettings()
     private var completion: ((Result<MediaDraft,Error>) -> Void)?
     private var stateChanged: ((Bool) -> Void)?
+    private var requestID: UUID?
+    // Frame state, including the writer, is confined to queue.
+    private var frameRequestID: UUID?
     private let stateLock = NSLock()
     private var active = false
 
@@ -29,28 +33,43 @@ final class DualCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuffe
             guard AVCaptureMultiCamSession.isMultiCamSupported else {
                 DispatchQueue.main.async { completion(.failure(CameraFailure.message("This iPhone does not support simultaneous front and rear camera capture."))) }; return
             }
+            guard self.completion == nil else {
+                DispatchQueue.main.async { completion(.failure(CameraFailure.message("Dual Capture is already starting, recording, or finishing."))) }; return
+            }
+            let requestID = UUID()
+            self.requestID = requestID
+            self.completion = completion
+            self.stateChanged = stateChanged
             do {
+                self.resetSessionGraph()
+                self.queue.sync { self.resetFrameState() }
                 try MediaFiles.requireSpace()
-                self.renderer = renderer; self.settings = settings; self.completion = completion; self.stateChanged = stateChanged
-                try self.configure(microphoneAllowed:microphoneAllowed)
+                let microphoneAvailable = try self.configure(microphoneAllowed: settings.audio && microphoneAllowed)
                 let url = try MediaFiles.newURL(extension:"mov")
-                self.recorder = try MovieRecorder(url:url,settings:settings,renderer:renderer,microphoneAvailable:microphoneAllowed)
+                try self.queue.sync {
+                    self.renderer = renderer
+                    self.settings = settings
+                    self.frameRequestID = requestID
+                    self.recorder = try MovieRecorder(url:url,settings:settings,renderer:renderer,microphoneAvailable:microphoneAvailable)
+                }
                 self.session.startRunning()
                 guard self.session.isRunning else { throw CameraFailure.message("The MultiCam session could not start.") }
                 self.setActive(true)
                 DispatchQueue.main.async { stateChanged(true) }
-            } catch { self.fail(error) }
+            } catch { self.complete(.failure(error), requestID: requestID) }
         }
     }
 
     func stop() {
         sessionQueue.async { [weak self] in
-            guard let self else { return }
-            self.queue.async { [weak self] in self?.finish() }
+            guard let self, self.isRecording, let requestID = self.requestID else { return }
+            self.setActive(false)
+            self.resetSessionGraph()
+            self.queue.async { [weak self] in self?.finish(requestID: requestID) }
         }
     }
 
-    private func configure(microphoneAllowed: Bool) throws {
+    private func configure(microphoneAllowed: Bool) throws -> Bool {
         session.beginConfiguration()
         defer { session.commitConfiguration() }
         session.automaticallyConfiguresApplicationAudioSession = false
@@ -60,8 +79,10 @@ final class DualCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuffe
         }
         try configureDevice(back); try configureDevice(front)
         let backInput = try AVCaptureDeviceInput(device:back), frontInput = try AVCaptureDeviceInput(device:front)
-        guard session.canAddInput(backInput), session.canAddInput(frontInput) else { throw CameraFailure.message("This MultiCam configuration cannot use both camera inputs.") }
-        session.addInputWithNoConnections(backInput); session.addInputWithNoConnections(frontInput)
+        guard session.canAddInput(backInput) else { throw CameraFailure.message("This MultiCam configuration cannot add the rear camera.") }
+        session.addInputWithNoConnections(backInput)
+        guard session.canAddInput(frontInput) else { throw CameraFailure.message("This MultiCam configuration cannot use both camera inputs.") }
+        session.addInputWithNoConnections(frontInput)
         for output in [backOutput,frontOutput] {
             output.alwaysDiscardsLateVideoFrames = true
             output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String:kCVPixelFormatType_420YpCbCr8BiPlanarFullRange]
@@ -71,23 +92,33 @@ final class DualCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuffe
         }
         try connect(backInput,to:backOutput,mirrored:false)
         try connect(frontInput,to:frontOutput,mirrored:false)
-        if microphoneAllowed, let microphone = AVCaptureDevice.default(for:.audio) {
+        if microphoneAllowed {
+            guard let microphone = AVCaptureDevice.default(for:.audio) else {
+                throw CameraFailure.message("The microphone requested for Dual Capture is unavailable.")
+            }
             let input = try AVCaptureDeviceInput(device:microphone)
-            if session.canAddInput(input) { session.addInput(input) }
-            if session.canAddOutput(audioOutput) { session.addOutput(audioOutput); audioOutput.setSampleBufferDelegate(self,queue:queue) }
+            guard session.canAddInput(input) else { throw CameraFailure.message("Dual Capture cannot attach the microphone input.") }
+            session.addInput(input)
+            guard session.canAddOutput(audioOutput) else { throw CameraFailure.message("Dual Capture cannot attach the microphone output.") }
+            session.addOutput(audioOutput)
+            audioOutput.setSampleBufferDelegate(self,queue:queue)
+            guard audioOutput.connection(with: .audio)?.isEnabled == true else {
+                throw CameraFailure.message("Dual Capture could not connect the requested microphone.")
+            }
             let audio = AVAudioSession.sharedInstance()
-            try? audio.setCategory(.playAndRecord,mode:.videoRecording,options:[.defaultToSpeaker,.allowBluetooth])
-            try? audio.setActive(true)
+            try audio.setCategory(.playAndRecord,mode:.videoRecording,options:[.defaultToSpeaker,.allowBluetooth])
+            try audio.setActive(true)
         }
         guard session.hardwareCost <= 1.0, session.systemPressureCost <= 1.0 else {
             throw CameraFailure.message("This front/rear MultiCam combination exceeds the iPhone's capture budget. Try another device or close other camera apps.")
         }
+        return audioOutput.connection(with: .audio)?.isEnabled == true
     }
 
     private func configureDevice(_ device: AVCaptureDevice) throws {
         let candidates = device.formats.filter { f in
             let d = CMVideoFormatDescriptionGetDimensions(f.formatDescription)
-            return d.width >= 1280 && d.width <= 1920 && d.height >= 720 &&
+            return f.isMultiCamSupported && d.width >= 1280 && d.width <= 1920 && d.height >= 720 &&
                 f.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= 30 && $0.maxFrameRate >= 30 }
         }.sorted { a,b in
             let da=CMVideoFormatDescriptionGetDimensions(a.formatDescription), db=CMVideoFormatDescriptionGetDimensions(b.formatDescription)
@@ -118,7 +149,8 @@ final class DualCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuffe
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        if output === audioOutput { do { try recorder?.appendAudio(sampleBuffer) } catch { fail(error) }; return }
+        guard isRecording, let requestID = frameRequestID else { return }
+        if output === audioOutput { do { try recorder?.appendAudio(sampleBuffer) } catch { fail(error, requestID: requestID) }; return }
         guard let buffer=CMSampleBufferGetImageBuffer(sampleBuffer), let renderer else { return }
         let pts=CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         if output === frontOutput {
@@ -135,30 +167,67 @@ final class DualCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuffe
             let plan=CropPlan(source:size,output:size,angle:0,zoom:1,scale:1,center:size.center,wasClamped:false,halfFootprint:Point2(size.width/2,size.height/2))
             var diagnostics=FrameDiagnostics(); diagnostics.trackingStatus="Dual Capture"; diagnostics.detail=size
             preview.publish(PreviewFrame(image:composite,recordingImage:composite,overview:composite,plan:plan,recordingPlan:plan,target:nil,trackingGood:true,diagnostics:diagnostics))
-        } catch { fail(error) }
+        } catch { fail(error, requestID: requestID) }
     }
 
-    private func finish() {
-        guard isRecording else { return }
-        setActive(false); session.stopRunning(); preview.publish(nil)
+    private func finish(requestID: UUID) {
+        guard frameRequestID == requestID else { return }
         let recorder=self.recorder; self.recorder=nil
-        guard let recorder else { fail(CameraFailure.message("Dual Capture recorder is missing.")); return }
+        let layout = settings.dualCaptureLayout.rawValue
+        resetFrameState()
+        guard let recorder else { fail(CameraFailure.message("Dual Capture recorder is missing."), requestID: requestID); return }
+        finishingRecorder = recorder
         recorder.finish { [weak self] result in
             guard let self else { return }
-            try? AVAudioSession.sharedInstance().setActive(false,options:.notifyOthersOnDeactivation)
-            DispatchQueue.main.async {
-                self.stateChanged?(false)
-                self.completion?(result.map { MediaDraft(url:$0,isVideo:true,summary:"Dual Capture · \(self.settings.dualCaptureLayout.rawValue) · simultaneous front + rear") })
-                self.completion=nil; self.stateChanged=nil
+            self.sessionQueue.async { [weak self] in
+                self?.complete(result.map { MediaDraft(url:$0,isVideo:true,summary:"Dual Capture · \(layout) · simultaneous front + rear") },
+                    requestID: requestID)
             }
         }
     }
 
-    private func fail(_ error: Error) {
-        setActive(false); if session.isRunning { session.stopRunning() }; preview.publish(nil); recorder=nil
+    /// Session graph mutations always run on sessionQueue, never in a sample-buffer callback.
+    private func resetSessionGraph() {
+        if session.isRunning { session.stopRunning() }
+        backOutput.setSampleBufferDelegate(nil, queue: nil)
+        frontOutput.setSampleBufferDelegate(nil, queue: nil)
+        audioOutput.setSampleBufferDelegate(nil, queue: nil)
+        session.beginConfiguration()
+        for connection in session.connections { session.removeConnection(connection) }
+        for output in session.outputs { session.removeOutput(output) }
+        for input in session.inputs { session.removeInput(input) }
+        session.commitConfiguration()
+    }
+
+    private func resetFrameState() {
+        recorder?.cancel()
+        finishingRecorder?.cancel()
+        recorder = nil
+        finishingRecorder = nil
+        renderer = nil
+        latestFront = nil
+        latestFrontPTS = .invalid
+        frameRequestID = nil
+        preview.publish(nil)
+    }
+
+    private func fail(_ error: Error, requestID: UUID) {
+        sessionQueue.async { [weak self] in self?.complete(.failure(error), requestID: requestID) }
+    }
+
+    private func complete(_ result: Result<MediaDraft, Error>, requestID: UUID) {
+        guard self.requestID == requestID else { return }
+        setActive(false)
+        resetSessionGraph()
+        queue.sync { self.resetFrameState() }
         try? AVAudioSession.sharedInstance().setActive(false,options:.notifyOthersOnDeactivation)
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }; self.stateChanged?(false); self.completion?(.failure(error)); self.completion=nil; self.stateChanged=nil
+        let completion = self.completion, stateChanged = self.stateChanged
+        self.completion = nil
+        self.stateChanged = nil
+        self.requestID = nil
+        DispatchQueue.main.async {
+            stateChanged?(false)
+            completion?(result)
         }
     }
     private func setActive(_ value: Bool) { stateLock.lock(); active=value; stateLock.unlock() }

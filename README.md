@@ -26,6 +26,12 @@ Horizon and Zoom Lock are WYSIWYG: their preview uses the same live crop/level g
 
 RAW and Live Photos preserve the native originals. Their DNG, companion still, and paired movie bypass custom crop/rotation rendering; incompatible Horizon/Zoom Lock, crop zoom, aspect ratios, and rendered styles are disabled. A RAW or Live Photo request must produce its requested resources: an unavailable RAW type or missing Live Photo movie reports an error instead of silently saving an ordinary photo.
 
+Capture requests retain an immutable settings snapshot through the shutter, timer, burst and recording queues. If reconfiguration fails and the camera restores an older setup, the new capture is rejected. Burst stops on capture errors. Unsupported saved settings can be repaired while the camera is stopped, and QuickTake chooses its output size and frame rate from the active photo stream rather than assuming a different camera format.
+
+Video preserves the requested codec; unsupported HEVC does not silently become H.264. HDR and Log require a camera format that supports the requested color space. Computational photography requires every requested nonempty bracket frame. Unfinished movie files are removed, while native movies marked successfully finished are checked for a playable video track before saving. Dual and Spatial capture reset their MultiCam sessions for reuse; Spatial capture also supports cancellation and a bounded frame wait.
+
+The local library preserves corrupted index files before recovering intact captures and keeps index-write errors visible. Valid indexes retain RAW/Live pairings; recovery warns when orphaned resources cannot be reliably paired. Repeated Photos export requests share an in-flight guard, and RAW export makes the DNG primary with its processed companion attached.
+
 ## Apple Camera / AVFoundation parity
 
 HorizonCamera does **not** claim to clone Apple's proprietary image-processing algorithms. The table separates features that can be implemented through public capture APIs from stock-Camera behavior that Apple does not expose as a drop-in API.

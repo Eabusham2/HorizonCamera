@@ -101,6 +101,24 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         let snapshot = configuration
         DispatchQueue.main.async { [weak self] in self?.onControlSettings?(snapshot) }
     }
+    static func validateConfiguration(_ requested: CameraSettings, applied: CameraSettings) throws {
+        guard requested == applied else {
+            throw CameraFailure.message("The requested camera settings could not be applied. No capture was started; check the format and try again.")
+        }
+    }
+    static func supportsRequestedColor(_ settings: CameraSettings, colorSpaces: [AVCaptureColorSpace]) -> Bool {
+        if settings.codec.isProResRAW { return true }
+        guard let color = settings.colorProfile.captureColorSpace else { return false }
+        return colorSpaces.contains(color)
+    }
+    /// Call on sessionQueue immediately before starting a capture. A failed update
+    /// may restore the previous session, which must not satisfy a different request.
+    func requireConfiguration(_ requested: CameraSettings) throws {
+        guard configured, state == .ready, session.isRunning else {
+            throw CameraFailure.message("Wait for the camera to become ready before capturing.")
+        }
+        try Self.validateConfiguration(requested, applied: configuration)
+    }
     func start(settings: CameraSettings, microphoneAllowed: Bool) {
         sessionQueue.async { [self] in
             wantedRunning = true; self.microphoneAllowed = microphoneAllowed
@@ -172,7 +190,12 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             } catch {
                 report(error.localizedDescription)
                 do { try configure(old, selected: previousLens) }
-                catch { report("The camera could not restore its previous configuration: \(error.localizedDescription)") }
+                catch {
+                    if session.isRunning { session.stopRunning() }
+                    setState(.stopped)
+                    frameQueue.async { [self] in processor.preview.publish(nil) }
+                    report("The camera could not restore its previous configuration: \(error.localizedDescription)")
+                }
             }
         }
     }
@@ -218,7 +241,8 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             let d=CMVideoFormatDescriptionGetDimensions(f.formatDescription)
             let baseOK=max(d.width,d.height) >= 1280 && min(d.width,d.height) >= 720
             let sizeOK=settings.mode.isPhotoMode || Self.format(f,meets:settings.resolution)
-            return baseOK && sizeOK && f.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= fps+0.001 && $0.maxFrameRate >= fps-0.001 }
+            return baseOK && sizeOK && Self.supportsRequestedColor(settings,colorSpaces:f.supportedColorSpaces) &&
+                f.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= fps+0.001 && $0.maxFrameRate >= fps-0.001 }
         }
         func codecPenalty(_ f: AVCaptureDevice.Format) -> Int {
             let subtype=f.formatDescription.mediaSubType.rawValue
@@ -242,7 +266,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             }
             return score(a) < score(b)
         }
-        guard let format = sorted.first else { throw CameraFailure.message("This lens does not support \(fps) fps. Choose another lens or a lower frame rate.") }
+        guard let format = sorted.first else { throw CameraFailure.message("This lens does not support the selected size, \(fps) fps and \(settings.colorProfile.rawValue) combination. Choose a supported format.") }
         let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
         if !settings.mode.isPhotoMode && !Self.format(format,meets:settings.resolution) {
             throw CameraFailure.message("\(settings.resolution.rawValue) at this frame rate is not supported by this lens.")
@@ -290,6 +314,12 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             device.activeFormat = format
             device.automaticallyAdjustsVideoHDREnabled = false
             if device.isVideoHDREnabled { device.isVideoHDREnabled = false }
+            if !settings.codec.isProResRAW, let color = settings.colorProfile.captureColorSpace {
+                // Eligibility already established support; apply before any capture
+                // can observe this configuration or claim an HDR/Log recording.
+                device.activeColorSpace = color
+                if format.isVideoHDRSupported { device.isVideoHDREnabled = settings.colorProfile.isHDR }
+            }
             let frameDuration=Self.frameDuration(for:fps)
             device.activeVideoMinFrameDuration=frameDuration
             device.activeVideoMaxFrameDuration=frameDuration
@@ -523,9 +553,11 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             }
         }
     }
-    func startPanorama() {
+    func startPanorama(expectedSettings: CameraSettings) {
         sessionQueue.async { [self] in
             guard state == .ready, session.isRunning, configuration.mode == .panorama, let device = videoInput?.device else { return }
+            do { try requireConfiguration(expectedSettings) }
+            catch { report(error.localizedDescription); return }
             guard motion.sample(at:CMClockGetTime(CMClockGetHostTimeClock()).seconds) != nil else {
                 report("Motion data is not ready. Panorama needs device motion to track the sweep."); return
             }
@@ -562,10 +594,11 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
     }
 
-    func startRecording(override: CameraSettings? = nil) {
+    func startRecording(expectedSettings: CameraSettings, override: CameraSettings? = nil) {
         sessionQueue.async { [self] in
             guard state == .ready, session.isRunning else { return }
             do {
+                try requireConfiguration(expectedSettings)
                 try MediaFiles.requireSpace()
                 let url=try MediaFiles.newURL(extension:"mov"), settings=override ?? configuration
                 let microphoneAvailable=audioInput != nil && audioOutput.connection(with:.audio) != nil
@@ -612,7 +645,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             if let restore { processor.configure(restore,front:front,horizontalFOVDegrees:fov) }
             recorder.finish { [self] result in
                 let mapped = result.map { url in MediaDraft(url:url,isVideo:true,
-                    summary:"\(recorder.settings.mode.rawValue) · \(recorder.settings.resolution.rawValue) output · H:\(recorder.settings.horizonLock ? "on":"off") Z:\(recorder.settings.zoomLock ? "on":"off")") }
+                    summary:"\(recorder.settings.mode.rawValue) · \(recorder.settings.effectiveOutputResolution.rawValue) output · H:\(recorder.settings.horizonLock ? "on":"off") Z:\(recorder.settings.zoomLock ? "on":"off")") }
                 deliver(mapped)
                 sessionQueue.async { [self] in setState(wantedRunning ? .ready : .stopped) }
             }
@@ -650,14 +683,16 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         }
     }
 
-    private func captureComputationalPhoto(_ config: CameraSettings, codec: AVVideoCodecType) throws -> Bool {
+    private func captureComputationalPhoto(_ config: CameraSettings, codec: AVVideoCodecType) throws {
         let biases = computationalBiases(config.computationalPhoto,maxCount:photoOutput.maxBracketedCapturePhotoCount)
-        guard biases.count >= 2 else { return false }
+        guard biases.count >= 2 else {
+            throw CameraFailure.message("The selected computational photo mode requires exposure bracketing, which is unavailable on this lens or format.")
+        }
         let bracket = biases.map { AVCaptureAutoExposureBracketedStillImageSettings.autoExposureSettings(exposureTargetBias:$0) }
         let settings = AVCapturePhotoBracketSettings(rawPixelFormatType:0,processedFormat:[AVVideoCodecKey:codec],bracketedSettings:bracket)
         if photoOutput.isLensStabilizationDuringBracketedCaptureSupported { settings.isLensStabilizationEnabled = true }
         let id = settings.uniqueID
-        let delegate = BracketPhotoCapture(id:id,settings:config) { [weak self] result in
+        let delegate = BracketPhotoCapture(id:id,settings:config,expectedFrameCount:bracket.count) { [weak self] result in
             guard let self else { return }
             self.frameQueue.async { [self] in
                 do { self.deliver(.success(try self.saveComputationalPhoto(try result.get()))) }
@@ -671,7 +706,6 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         bracketJobs[id] = delegate
         setState(.takingPhoto)
         photoOutput.capturePhoto(with:settings,delegate:delegate)
-        return true
     }
 
     private func saveComputationalPhoto(_ packet: BracketPhotoPacket) throws -> MediaDraft {
@@ -689,10 +723,11 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         return MediaDraft(url:url,isVideo:false,summary:"\(packet.settings.computationalPhoto.rawValue) · \(packet.images.count)-frame bracket fusion")
     }
 
-    func capturePhoto() {
+    func capturePhoto(expectedSettings: CameraSettings) {
         sessionQueue.async { [self] in
             guard state == .ready, let device = videoInput?.device else { return }
             do {
+                try requireConfiguration(expectedSettings)
                 try MediaFiles.requireSpace()
                 let config = configuration
                 let plan = try PhotoCapturePlan(settings: config, availableCodecs: photoOutput.availablePhotoCodecTypes,
@@ -700,7 +735,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                     livePhotoEnabled: photoOutput.isLivePhotoCaptureEnabled,
                     livePhotoSuspended: photoOutput.isLivePhotoCaptureSuspended)
                 let codec = plan.codec
-                if config.usesBracketedPhotoPipeline, try captureComputationalPhoto(config,codec:codec) { return }
+                if config.usesBracketedPhotoPipeline { try captureComputationalPhoto(config,codec:codec); return }
                 let settings: AVCapturePhotoSettings
                 if let raw = plan.rawPixelFormat {
                     guard device.videoZoomFactor == 1,

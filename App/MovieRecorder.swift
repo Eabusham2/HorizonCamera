@@ -19,28 +19,25 @@ final class MovieRecorder {
     private(set) var audioDrops = 0
     private(set) var writtenFrames = 0
     init(url: URL, settings: CameraSettings, renderer: ImageRenderer, microphoneAvailable: Bool) throws {
+        guard !FileManager.default.fileExists(atPath: url.path) else {
+            throw CameraFailure.message("The recording destination already exists.")
+        }
         self.url = url; self.settings = settings; self.renderer = renderer
         timeline = RecordingTimeline(cadence: settings.cadence)
-        writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        self.writer = writer
+        var initialized = false
+        defer {
+            if !initialized {
+                writer.cancelWriting()
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
         writer.metadata = NativeMovieController.movieMetadata(settings)
         let size = settings.outputSize
-        let fps:Double = settings.mode == .slowMotion || settings.mode == .timeLapse ? 30 : settings.fps
-        let bitsPerPixelFrame = settings.codec == .efficient ? 0.20 : 0.28
-        let bitrate = min(settings.codec == .efficient ? 120_000_000 : 160_000_000,
-                          max(5_000_000,Int(size.width*size.height*Double(fps)*bitsPerPixelFrame)))
-        var output: [String: Any] = [AVVideoCodecKey: settings.codec.avCodec,
-            AVVideoWidthKey: Int(size.width), AVVideoHeightKey: Int(size.height),
-            AVVideoColorPropertiesKey: [AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
-                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
-                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2],
-            AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: bitrate,
-                AVVideoExpectedSourceFrameRateKey: fps, AVVideoMaxKeyFrameIntervalKey: Int(ceil(fps*2))]]
-        if !writer.canApply(outputSettings: output, forMediaType: .video) {
-            output[AVVideoCodecKey] = AVVideoCodecType.h264
-        }
-        guard writer.canApply(outputSettings: output, forMediaType: .video) else {
-            throw CameraFailure.message("This device cannot encode the chosen video format.")
-        }
+        let output = try Self.videoOutputSettings(settings, canApply: {
+            writer.canApply(outputSettings: $0, forMediaType: .video)
+        })
         video = AVAssetWriterInput(mediaType: .video, outputSettings: output)
         video.expectsMediaDataInRealTime = true
         guard writer.canAdd(video) else { throw CameraFailure.message("Cannot create the video recording track.") }
@@ -59,6 +56,26 @@ final class MovieRecorder {
             writer.add(input); audio = input
         } else { audio = nil }
         writer.shouldOptimizeForNetworkUse = true
+        initialized = true
+    }
+
+    static func videoOutputSettings(_ settings: CameraSettings, canApply: ([String: Any]) -> Bool) throws -> [String: Any] {
+        let size = settings.outputSize
+        let fps:Double = settings.mode == .slowMotion || settings.mode == .timeLapse ? 30 : settings.fps
+        let bitsPerPixelFrame = settings.codec == .efficient ? 0.20 : 0.28
+        let bitrate = min(settings.codec == .efficient ? 120_000_000 : 160_000_000,
+                          max(5_000_000,Int(size.width*size.height*Double(fps)*bitsPerPixelFrame)))
+        let output: [String: Any] = [AVVideoCodecKey: settings.codec.avCodec,
+            AVVideoWidthKey: Int(size.width), AVVideoHeightKey: Int(size.height),
+            AVVideoColorPropertiesKey: [AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
+                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2],
+            AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: bitrate,
+                AVVideoExpectedSourceFrameRateKey: fps, AVVideoMaxKeyFrameIntervalKey: Int(ceil(fps*2))]]
+        guard canApply(output) else {
+            throw CameraFailure.message("This device cannot encode the chosen video format.")
+        }
+        return output
     }
     func appendVideo(_ image: CIImage, sourcePTS: CMTime) throws {
         guard !finishing else { return }
@@ -116,7 +133,18 @@ final class MovieRecorder {
         video.markAsFinished(); audio?.markAsFinished()
         writer.finishWriting { [self] in
             if writer.status == .completed { completion(.success(url)) }
-            else { completion(.failure(writer.error ?? CameraFailure.message("Could not finish the video file."))) }
+            else {
+                try? FileManager.default.removeItem(at: url)
+                completion(.failure(writer.error ?? CameraFailure.message("Could not finish the video file.")))
+            }
         }
+    }
+
+    /// Call on the owning frame queue. Completed recordings remain valid captures.
+    func cancel() {
+        finishing = true
+        guard writer.status != .completed else { return }
+        writer.cancelWriting()
+        if writer.status != .completed { try? FileManager.default.removeItem(at: url) }
     }
 }

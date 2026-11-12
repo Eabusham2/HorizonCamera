@@ -221,7 +221,8 @@ final class FrameProcessor {
     func beginRecording() { recording = true; frozenAngle = lastPlan?.angle }
     func endRecording() { recording = false; frozenAngle = nil }
     func configure(_ next: CameraSettings, front: Bool, horizontalFOVDegrees: Double? = nil) {
-        let geometryReset = self.front != front || settings.framing != next.framing || settings.mirrorSelfie != next.mirrorSelfie
+        let geometryReset = self.front != front || settings.framing != next.framing || settings.mirrorSelfie != next.mirrorSelfie ||
+            settings.preservesNativePhotoOriginals != next.preservesNativePhotoOriginals
         if geometryReset { resetGeometry(keepPreview:true) }
         if settings.zoomLock != next.zoomLock { tracker.reset(); pendingTarget = nil; zoomAnchor = nil; frameLockOffset = .zero; frameLockTimestamp = nil }
         if settings.actionStabilization != next.actionStabilization || settings.smartArtifactGuard != next.smartArtifactGuard {

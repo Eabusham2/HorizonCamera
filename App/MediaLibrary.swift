@@ -39,47 +39,101 @@ enum MediaFiles {
         }
     }
 }
+
+enum MediaLibraryIndex {
+    struct Loaded {
+        let items: [MediaItem]
+        let warning: String?
+        let requiresBackupBeforeWrite: Bool
+    }
+
+    static func preserveDamagedIndex(in directory: URL) throws {
+        let original = directory.appendingPathComponent("library.json")
+        let backup = directory.appendingPathComponent("library-corrupt-\(UUID().uuidString).json")
+        try FileManager.default.moveItem(at: original, to: backup)
+    }
+
+    static func load(from directory: URL) throws -> Loaded {
+        let manager = FileManager.default
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let manifest = directory.appendingPathComponent("library.json")
+        var items: [MediaItem] = []
+        var warnings: [String] = []
+        var requiresBackup = false
+        if manager.fileExists(atPath: manifest.path) {
+            do {
+                items = try JSONDecoder().decode([MediaItem].self, from: Data(contentsOf: manifest))
+                items = items.filter { manager.fileExists(atPath: directory.appendingPathComponent($0.filename).path) }
+            } catch {
+                do {
+                    try preserveDamagedIndex(in: directory)
+                    warnings.append("The local capture index was unreadable. Its original contents were preserved.")
+                } catch {
+                    requiresBackup = true
+                    warnings.append("The local capture index was unreadable and could not be backed up. It was left unchanged.")
+                }
+            }
+        }
+        let known = Set(items.flatMap { [$0.filename, $0.liveFilename, $0.rawFilename].compactMap { $0 } })
+        var recovered = 0
+        do {
+            let files = try manager.contentsOfDirectory(at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .creationDateKey], options: [.skipsHiddenFiles])
+            for url in files where !known.contains(url.lastPathComponent) && ["mov", "heic", "jpg", "dng"].contains(url.pathExtension.lowercased()) {
+                guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .creationDateKey]),
+                      values.isRegularFile == true, (values.fileSize ?? 0) > 0 else { continue }
+                var item = MediaItem(filename: url.lastPathComponent, isVideo: url.pathExtension.lowercased() == "mov", summary: "Recovered local capture")
+                if let date = values.creationDate { item.created = date }
+                items.append(item)
+                recovered += 1
+            }
+        } catch {
+            warnings.append("Local capture recovery failed: \(error.localizedDescription)")
+        }
+        if recovered > 0 {
+            warnings.append("Recovered \(recovered) unindexed capture files. RAW and Live Photo resources may appear separately because their pairing could not be verified.")
+        }
+        items.sort { $0.created > $1.created }
+        return Loaded(items: items, warning: warnings.isEmpty ? nil : warnings.joined(separator: "\n"),
+                      requiresBackupBeforeWrite: requiresBackup)
+    }
+}
+
 @MainActor final class MediaLibrary: ObservableObject {
     @Published private(set) var items: [MediaItem] = []
     @Published var message: String?
     private var exportsInProgress: Set<UUID> = []
+    private var persistenceError: String?
+    private var requiresIndexBackup = false
     private var manifest: URL { MediaFiles.directory.appendingPathComponent("library.json") }
     init() {
         do {
-            try FileManager.default.createDirectory(at: MediaFiles.directory, withIntermediateDirectories: true)
-            if FileManager.default.fileExists(atPath: manifest.path) {
-                items = try JSONDecoder().decode([MediaItem].self, from: Data(contentsOf: manifest))
-                items = items.filter { FileManager.default.fileExists(atPath: $0.url.path) }
-            }
-            // Recover any capture whose app was interrupted before the manifest write.
-            let known = Set(items.flatMap { [$0.filename, $0.liveFilename, $0.rawFilename].compactMap { $0 } })
-            let disk = try FileManager.default.contentsOfDirectory(at: MediaFiles.directory, includingPropertiesForKeys: nil)
-            for url in disk where !known.contains(url.lastPathComponent) && ["mov","heic","jpg","dng"].contains(url.pathExtension.lowercased()) {
-                items.append(MediaItem(filename: url.lastPathComponent, isVideo: url.pathExtension == "mov", summary: "Recovered local capture"))
-            }
-            items.sort { $0.created > $1.created }
+            let loaded = try MediaLibraryIndex.load(from: MediaFiles.directory)
+            items = loaded.items
+            requiresIndexBackup = loaded.requiresBackupBeforeWrite
+            message = loaded.warning
         } catch { message = "Local library: \(error.localizedDescription)" }
     }
     func add(_ draft: MediaDraft, saveToPhotos: Bool) async {
         let item = MediaItem(filename: draft.url.lastPathComponent, liveFilename: draft.liveMovie?.lastPathComponent,
                              rawFilename: draft.raw?.lastPathComponent, isVideo: draft.isVideo, summary: draft.summary)
         items.insert(item, at: 0)
-        persist()
+        let indexed = persist()
         if saveToPhotos { await exportToPhotos(item) }
-        else { message = nil }
+        else if indexed { showMessage(nil) }
     }
     func exportToPhotos(_ item: MediaItem) async {
         guard let current = items.first(where: { $0.id == item.id }) else {
-            message = "This capture is no longer in the local library."; return
+            showMessage("This capture is no longer in the local library."); return
         }
-        if current.savedToPhotos { message = "This capture is already saved to Photos."; return }
+        if current.savedToPhotos { showMessage("This capture is already saved to Photos."); return }
         guard exportsInProgress.insert(current.id).inserted else {
-            message = "This capture is already being saved to Photos."; return
+            showMessage("This capture is already being saved to Photos."); return
         }
         defer { exportsInProgress.remove(current.id) }
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard status == .authorized || status == .limited else {
-            message = "Saved in the app. Photos permission was not granted; Share still works."; return
+            showMessage("Saved in the app. Photos permission was not granted; Share still works."); return
         }
         do {
             try await PHPhotoLibrary.shared().performChanges {
@@ -99,23 +153,38 @@ enum MediaFiles {
                 }
             }
             if let index = items.firstIndex(where: { $0.id == current.id }) { items[index].savedToPhotos = true }
-            persist(); message = nil
-        } catch { message = "Saved in the app, but Photos export failed: \(error.localizedDescription)" }
+            if persist() { showMessage(nil) }
+        } catch { showMessage("Saved in the app, but Photos export failed: \(error.localizedDescription)") }
     }
     func deleteLocal(_ item: MediaItem) {
         guard !exportsInProgress.contains(item.id) else {
-            message = "Wait for this capture to finish saving to Photos before deleting its local copy."; return
+            showMessage("Wait for this capture to finish saving to Photos before deleting its local copy."); return
         }
         do {
             for url in [item.url, item.liveURL, item.rawURL].compactMap({ $0 }) {
                 if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
             }
-            items.removeAll { $0.id == item.id }; persist()
-            message = nil
-        } catch { message = error.localizedDescription }
+            items.removeAll { $0.id == item.id }
+            if persist() { showMessage(nil) }
+        } catch { showMessage(error.localizedDescription) }
     }
-    private func persist() {
-        do { try JSONEncoder().encode(items).write(to: manifest, options: .atomic) }
-        catch { message = "Capture exists, but the library index could not be saved: \(error.localizedDescription)" }
+    private func showMessage(_ text: String?) {
+        let parts = [persistenceError, text].compactMap { $0 }
+        message = parts.isEmpty ? nil : parts.joined(separator: "\n")
+    }
+    @discardableResult private func persist() -> Bool {
+        do {
+            if requiresIndexBackup {
+                try MediaLibraryIndex.preserveDamagedIndex(in: MediaFiles.directory)
+                requiresIndexBackup = false
+            }
+            try JSONEncoder().encode(items).write(to: manifest, options: .atomic)
+            persistenceError = nil
+            return true
+        } catch {
+            persistenceError = "The local library index could not be saved. Recent library changes may not survive relaunch: \(error.localizedDescription)"
+            showMessage(nil)
+            return false
+        }
     }
 }

@@ -508,6 +508,9 @@ struct CameraView: View {
     }
 
     private func modeUnavailableReason(_ mode:CameraMode) -> String? {
+        if (mode == .spatial || mode == .spatialPhoto) && model.settings.codec != .efficient {
+            return "Choose HEVC / HEIF encoding before selecting a spatial capture mode."
+        }
         switch mode {
         case .slowMotion: return model.capabilities.supportedSlowMotionFPS.isEmpty ? "Slo-mo is not supported by the active camera." : nil
         case .cinematic: return !model.capabilities.cinematic ? "Cinematic is not supported by the active camera/format." : nil
@@ -520,6 +523,7 @@ struct CameraView: View {
     }
     private func codecUnavailableReason(_ codec:CodecChoice) -> String? {
         if model.codecAvailable(codec) { return nil }
+        if model.settings.mode == .spatial || model.settings.mode == .spatialPhoto { return "spatial capture requires HEVC / HEIF" }
         if model.settings.actionStabilization && codec.isProRes { return "turn Action off" }
         if codec.isProRes { return "not supported by this camera/format" }
         if codec == .compatible && model.settings.colorProfile != .sdr { return "requires SDR" }

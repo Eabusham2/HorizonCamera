@@ -142,6 +142,16 @@ enum VideoColorProfile: String, CaseIterable, Codable, Identifiable {
     var id: String { rawValue }
     var isLog: Bool { self == .appleLog || self == .appleLog2 }
     var isHDR: Bool { self == .hdrHLG || self == .dolbyVision84 }
+    var captureColorSpace: AVCaptureColorSpace? {
+        switch self {
+        case .sdr: return .sRGB
+        case .hdrHLG, .dolbyVision84: return .HLG_BT2020
+        case .appleLog: return .appleLog
+        case .appleLog2:
+            if #available(iOS 26.0, *) { return .appleLog2 }
+            return nil
+        }
+    }
 }
 
 enum StabilizationChoice: String, CaseIterable, Codable, Identifiable {

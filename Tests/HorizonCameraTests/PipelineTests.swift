@@ -302,6 +302,27 @@ final class PipelineTests: XCTestCase {
         XCTAssertLessThanOrEqual(image.width, 600)
         XCTAssertNil(draft.raw); XCTAssertNil(draft.liveMovie)
     }
+    func testEnteringNativePhotoModeImmediatelyResetsPreviewCrop() throws {
+        let renderer = try makeRenderer()
+        let source = try buffer(pattern(width: 600, height: 800), renderer: renderer)
+        for isRAW in [true, false] {
+            let processor = FrameProcessor(motion: MotionService(), renderer: renderer)
+            var old = CameraSettings()
+            old.mode = .photo; old.horizonLock = false; old.zoomLock = false; old.zoom = 3
+            processor.configure(old, front: false)
+            let cropped = try processor.process(buffer: source, hostTime: 1)
+            XCTAssertEqual(cropped.plan.zoom, 3, accuracy: 0.001)
+            var native = old
+            native.raw = isRAW; native.livePhoto = !isRAW
+            native.normalize(changedFrom: old)
+            processor.configure(native, front: false)
+            let firstNativeFrame = try processor.process(buffer: source, hostTime: 1.001)
+            XCTAssertEqual(firstNativeFrame.plan.zoom, 1, accuracy: 0.001)
+            XCTAssertEqual(firstNativeFrame.plan.angle, 0, accuracy: 0.001)
+            XCTAssertEqual(firstNativeFrame.plan.center.x, firstNativeFrame.plan.source.width/2, accuracy: 0.001)
+            XCTAssertEqual(firstNativeFrame.plan.center.y, firstNativeFrame.plan.source.height/2, accuracy: 0.001)
+        }
+    }
     func testNonClassicPhotoFramingProducesRequestedAspect() throws {
         let renderer = try makeRenderer(), processor = FrameProcessor(motion:MotionService(),renderer:try makeRenderer())
         var settings = CameraSettings(); settings.mode = .photo; settings.horizonLock = false; settings.photoFraming = .landscape

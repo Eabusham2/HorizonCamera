@@ -33,7 +33,7 @@ import Photos
     private var burstTask: Task<Void,Never>?
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var requestedStartupPermissions = false
-    var canConfigure: Bool { state == .ready && countdown == nil }
+    var canConfigure: Bool { !requesting && countdown == nil && (state == .ready || state == .stopped) }
     var isRecording: Bool { state == .recording }
     var busy: Bool { state == .takingPhoto || state == .finishing || state == .starting }
     var preview: PreviewFeed? { dualCapture.isRecording ? dualCapture.preview : engine?.processor.preview }
@@ -51,6 +51,27 @@ import Photos
         var result=value
         result.zoom=1; result.torch=false; result.aeafLock=false
         return result
+    }
+
+    nonisolated static func quickTakeSettings(from photo: CameraSettings, sourceSize: Size2) -> CameraSettings? {
+        guard photo.mode == .photo, sourceSize.width.isFinite, sourceSize.height.isFinite,
+              sourceSize.width > 0, sourceSize.height > 0,
+              photo.captureFPS.isFinite, photo.captureFPS > 0 else { return nil }
+        let framing = Framing.portrait
+        guard let resolution = [Resolution.ultraHD, .fullHD, .hd].first(where: {
+            let output = framing.size(longEdge: $0.longEdge)
+            return output.width <= sourceSize.width && output.height <= sourceSize.height
+        }) else { return nil }
+        var quick = photo
+        quick.mode = .video
+        quick.raw = false
+        quick.livePhoto = false
+        quick.timer = 0
+        quick.videoFraming = framing
+        quick.resolution = resolution
+        quick.fps = photo.captureFPS
+        quick.normalize(changedFrom: photo)
+        return quick
     }
 
     init() {
@@ -103,7 +124,11 @@ import Photos
             self.settings = actual
             self.persist()
         }
-        engine?.onError = { [weak self] text in if self?.error != text { self?.error = text } }
+        engine?.onError = { [weak self] text in
+            guard let self else { return }
+            self.stopBurst()
+            if self.error != text { self.error = text }
+        }
         engine?.onMedia = { [weak self] result in self?.handleMedia(result) }
         if engine == nil { error = "This device does not provide the Metal renderer required by HorizonCamera." }
     }
@@ -136,6 +161,7 @@ import Photos
                 endBackgroundTask()
             }
         case .failure(let error):
+            stopBurst()
             self.error = error.localizedDescription
             endBackgroundTask()
         }
@@ -165,6 +191,7 @@ import Photos
 
     func suspend() {
         timerTask?.cancel(); countdown=nil; settingsTask?.cancel(); codeTask?.cancel(); burstTask?.cancel(); burstLocked=false; quickTakeLocked=false; detectedCode=nil; detectedText=[]
+        spatialPhotoCapture.cancel()
         if nativeMovie.isRecording { nativeMovie.stop() }
         if dualCapture.isRecording { dualCapture.stop() }
         if isRecording || state == .finishing || state == .takingPhoto {
@@ -197,10 +224,14 @@ import Photos
         let old = settings
         var next = old; edit(&next)
         next.normalize(changedFrom: old)
-        if next.includeLocationMetadata && !old.includeLocationMetadata { CaptureLocation.shared.request() }
-        if !next.includeLocationMetadata && old.includeLocationMetadata { CaptureLocation.shared.stop() }
         settings = next
         settingsTask?.cancel()
+        if state == .stopped {
+            persist()
+            return
+        }
+        if next.includeLocationMetadata && !old.includeLocationMetadata { CaptureLocation.shared.request() }
+        if !next.includeLocationMetadata && old.includeLocationMetadata { CaptureLocation.shared.stop() }
         if !next.requiresCaptureReconfiguration(comparedTo: old) {
             engine?.update(next)
             if needsAdvancedLiveApply(old,next), let engine { NativeMovieController.applyLiveSettings(next,engine:engine) }
@@ -224,6 +255,7 @@ import Photos
     }
 
     func codecAvailable(_ codec: CodecChoice) -> Bool {
+        if settings.mode == .spatial || settings.mode == .spatialPhoto { return codec == .efficient }
         guard settings.mode.isMovie else { return codec == .efficient || codec == .compatible }
         switch codec {
         case .efficient: return true
@@ -256,7 +288,9 @@ import Photos
         return true
     }
     func frameRateAvailable(_ rate: Double) -> Bool {
-        guard let rates=capabilities.supportedFPSByResolution[settings.resolution], rates.contains(where:{abs($0-rate)<0.02}) else { return false }
+        let configuredRates = capabilities.supportedFPSByResolution[settings.resolution] ?? []
+        let rates = state == .stopped && configuredRates.isEmpty ? capabilities.supportedFPS : configuredRates
+        guard rates.contains(where:{abs($0-rate)<0.02}) else { return false }
         if settings.actionStabilization && rate > 60.01 { return false }
         if settings.codec.isProResRAW {
             if settings.resolution == .openGate && rate > 60.01 { return false }
@@ -271,6 +305,9 @@ import Photos
 
     func selectMode(_ mode: CameraMode) {
         if burstLocked { toggleBurstLock() }
+        if (mode == .spatial || mode == .spatialPhoto) && settings.codec != .efficient {
+            notice = "Choose HEVC / HEIF encoding before selecting a spatial capture mode."; return
+        }
         if mode == .slowMotion && capabilities.supportedSlowMotionFPS.isEmpty { notice = "This lens does not support high-frame-rate slow motion."; return }
         if mode == .cinematic && !capabilities.cinematic { notice = "Cinematic Video requires a supported iPhone, lens, and format on iOS 26+."; return }
         if mode == .portrait && !capabilities.depthData { notice = "Portrait depth capture is not supported by this lens/format."; return }
@@ -285,7 +322,7 @@ import Photos
     }
 
     func selectLens(_ lens: LensOption) {
-        guard canConfigure else { return }
+        guard state == .ready, canConfigure else { return }
         settingsTask?.cancel(); settings.zoom = 1
         engine?.update(settings,lensID:lens.id)
     }
@@ -356,16 +393,21 @@ import Photos
         else { engine?.setZoom(local,anchor:anchor) }
     }
     func startQuickTake() {
-        guard canConfigure, settings.mode == .photo, let engine else { return }
-        var quick=settings
-        let old=quick
-        quick.mode = .video; quick.raw=false; quick.livePhoto=false; quick.timer=0
-        quick.videoFraming = .portrait
-        quick.resolution=capabilities.supportedResolutions.contains(.ultraHD) ? .ultraHD : .fullHD
-        quick.fps=(capabilities.supportedFPSByResolution[quick.resolution] ?? capabilities.supportedFPS).contains(30) ? 30 : ((capabilities.supportedFPSByResolution[quick.resolution] ?? capabilities.supportedFPS).first ?? 30)
-        quick.normalize(changedFrom:old)
+        guard state == .ready, canConfigure, settings.mode == .photo, let engine else { return }
+        let requested = settings
+        guard let frame = preview?.snapshot() else {
+            notice = "Wait for the live camera preview before starting QuickTake."
+            return
+        }
+        let extent = frame.overview.extent
+        guard let quick = Self.quickTakeSettings(from: requested,
+            sourceSize: Size2(Double(extent.width), Double(extent.height))) else {
+            notice = "The active camera stream cannot supply a 720p QuickTake video. Choose another lens or format."
+            return
+        }
+        settingsTask?.cancel(); engine.update(requested)
         quickTakeLocked=false
-        engine.startRecording(override:quick)
+        engine.startRecording(expectedSettings:requested,override:quick)
     }
     func stopQuickTake() { quickTakeLocked=false; engine?.stopRecording() }
     func lockQuickTake() { if isRecording && settings.mode == .photo { quickTakeLocked=true } }
@@ -373,17 +415,23 @@ import Photos
         guard isRecording, settings.mode != .dualCapture else { return }
         engine?.captureVideoStill()
     }
+    private func stopBurst() {
+        burstLocked = false
+        burstTask?.cancel()
+        burstTask = nil
+    }
     func toggleBurstLock() {
         guard settings.mode.isPhotoMode && settings.mode != .panorama && settings.mode != .spatialPhoto else { return }
-        if burstLocked { burstLocked=false; burstTask?.cancel(); burstTask=nil; return }
-        guard canConfigure else { return }
+        if burstLocked { stopBurst(); return }
+        guard state == .ready, canConfigure else { return }
+        let requested = settings
         settingsTask?.cancel()
-        engine?.update(settings)
+        engine?.update(requested)
         burstLocked=true
         burstTask=Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled && burstLocked {
-                if state == .ready { engine?.capturePhoto() }
+                if state == .ready { engine?.capturePhoto(expectedSettings:requested) }
                 try? await Task.sleep(for:.milliseconds(90))
             }
         }
@@ -395,22 +443,23 @@ import Photos
         if dualCapture.isRecording { state = .finishing; dualCapture.stop(); return }
         if nativeMovie.isRecording { state = .finishing; nativeMovie.stop(); return }
         if isRecording { engine?.stopRecording(); return }
-        guard canConfigure else { return }
-        settingsTask?.cancel(); engine?.update(settings)
-        if settings.mode == .panorama { engine?.startPanorama(); return }
+        guard state == .ready, canConfigure else { return }
+        let requested = settings
+        settingsTask?.cancel(); engine?.update(requested)
+        if settings.mode == .panorama { engine?.startPanorama(expectedSettings:requested); return }
         if settings.mode == .dualCapture { startDualCapture(); return }
         if settings.mode == .spatialPhoto { captureSpatialPhoto(); return }
         if settings.mode.isMovie {
             if settings.usesNativeMoviePipeline, let engine {
-                nativeMovie.start(engine: engine, settings: settings, stateChanged: { [weak self] recording in
+                nativeMovie.start(engine: engine, settings: requested, stateChanged: { [weak self] recording in
                     guard let self else { return }
                     self.state = recording ? .recording : .ready
                     UIApplication.shared.isIdleTimerDisabled = recording
                 }, completion: { [weak self] result in self?.handleMedia(result) })
-            } else { engine?.startRecording() }
+            } else { engine?.startRecording(expectedSettings:requested) }
             return
         }
-        if settings.timer == 0 { engine?.capturePhoto(); return }
+        if settings.timer == 0 { engine?.capturePhoto(expectedSettings:requested); return }
         let seconds = settings.timer
         timerTask = Task { [weak self] in
             guard let self else { return }
@@ -420,7 +469,7 @@ import Photos
                 try? await Task.sleep(for:.seconds(1))
             }
             guard !Task.isCancelled else { return }
-            countdown = nil; engine?.capturePhoto()
+            countdown = nil; engine?.capturePhoto(expectedSettings:requested)
         }
     }
 
@@ -430,6 +479,10 @@ import Photos
         state = .starting
         engine.pauseForExternalCapture { [weak self] in
             guard let self else { return }
+            guard UIApplication.shared.applicationState == .active else {
+                self.state = .stopped
+                return
+            }
             let microphoneAllowed = snapshot.audio && AVCaptureDevice.authorizationStatus(for:.audio) == .authorized
             self.dualCapture.start(renderer:renderer,settings:snapshot,microphoneAllowed:microphoneAllowed,stateChanged:{ [weak self] recording in
                 guard let self else { return }
@@ -451,6 +504,10 @@ import Photos
         state = .starting
         engine.pauseForExternalCapture { [weak self] in
             guard let self else { return }
+            guard UIApplication.shared.applicationState == .active else {
+                self.state = .stopped
+                return
+            }
             self.state = .takingPhoto
             self.spatialPhotoCapture.capture(renderer:renderer,settings:snapshot) { [weak self] result in
                 guard let self else { return }
@@ -468,6 +525,7 @@ import Photos
 
     func enableAudio(_ enabled: Bool) {
         guard canConfigure else { return }
+        if state == .stopped { change { $0.audio = enabled }; return }
         if !enabled { change { $0.audio = false }; return }
         Task {
             var permitted = AVCaptureDevice.authorizationStatus(for:.audio) == .authorized
@@ -481,6 +539,7 @@ import Photos
     func resetFraming() {
         guard canConfigure else { return }
         settings.zoom = 1
+        if state == .stopped { persist(); return }
         engine?.update(settings)
         engine?.frameQueue.async { [weak engine] in engine?.processor.resetGeometry() }
     }
