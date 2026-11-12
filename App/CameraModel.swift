@@ -192,8 +192,9 @@ import Photos
     func suspend() {
         timerTask?.cancel(); countdown=nil; settingsTask?.cancel(); codeTask?.cancel(); burstTask?.cancel(); burstLocked=false; quickTakeLocked=false; detectedCode=nil; detectedText=[]
         spatialPhotoCapture.cancel()
-        if nativeMovie.isRecording { nativeMovie.stop() }
-        if dualCapture.isRecording { dualCapture.stop() }
+        // Queue shutdown behind any start that has not published its active state yet.
+        nativeMovie.stop(on: engine)
+        dualCapture.stop()
         if isRecording || state == .finishing || state == .takingPhoto {
             if backgroundTask == .invalid {
                 backgroundTask = UIApplication.shared.beginBackgroundTask(withName:"Finish camera capture") { [weak self] in DispatchQueue.main.async { self?.endBackgroundTask() } }
@@ -453,8 +454,9 @@ import Photos
             if settings.usesNativeMoviePipeline, let engine {
                 nativeMovie.start(engine: engine, settings: requested, stateChanged: { [weak self] recording in
                     guard let self else { return }
-                    self.state = recording ? .recording : .ready
-                    UIApplication.shared.isIdleTimerDisabled = recording
+                    let active = UIApplication.shared.applicationState == .active
+                    self.state = active ? (recording ? .recording : .ready) : .stopped
+                    UIApplication.shared.isIdleTimerDisabled = recording && active
                 }, completion: { [weak self] result in self?.handleMedia(result) })
             } else { engine?.startRecording(expectedSettings:requested) }
             return
@@ -486,8 +488,9 @@ import Photos
             let microphoneAllowed = snapshot.audio && AVCaptureDevice.authorizationStatus(for:.audio) == .authorized
             self.dualCapture.start(renderer:renderer,settings:snapshot,microphoneAllowed:microphoneAllowed,stateChanged:{ [weak self] recording in
                 guard let self else { return }
-                self.state = recording ? .recording : .finishing
-                UIApplication.shared.isIdleTimerDisabled = recording
+                let active = UIApplication.shared.applicationState == .active
+                self.state = active ? (recording ? .recording : .finishing) : .stopped
+                UIApplication.shared.isIdleTimerDisabled = recording && active
             },completion:{ [weak self] result in
                 guard let self else { return }
                 self.handleMedia(result)

@@ -350,8 +350,8 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
         }
     }
 
-    func stop() {
-        engine?.sessionQueue.async { [weak self] in self?.output?.stopRecording() }
+    func stop(on pendingEngine: CaptureEngine? = nil) {
+        (pendingEngine ?? engine)?.sessionQueue.async { [weak self] in self?.output?.stopRecording() }
     }
 
     /// Only call on engine.sessionQueue, after capture has stopped or setup failed.
