@@ -260,3 +260,12 @@ See [architecture notes](Docs/ARCHITECTURE.md) and the [physical-device validati
 ## License / contribution note
 
 This is an independent camera implementation. “Apple”, “iPhone”, “ProRAW”, “ProRes” and related names identify platform technologies/features; “Samsung” identifies the reference feature family discussed above. No proprietary Apple or Samsung camera source code is included.
+
+## Search keywords (ignore)
+
+`ios`, `iphone`, `swift`, `swiftui`, `avfoundation`, `core-motion`,
+`core-image`, `metal`, `vision`, `camera-app`, `horizon-lock`, `zoom-lock`,
+`video-stabilization`, `gyroscope`, `motion-compensation`, `manual-camera`, `manual-focus`, `manual-exposure`,
+`white-balance`, `raw-photography`, `proraw`, `live-photos`, `heif`, `hevc`,
+`prores`, `video-recording`, `time-lapse`, `slow-motion`, `multicam`, `photo-metadata`,
+`exif`, `on-device-processing`, `local-storage`, `unsigned-ipa`, `xcode`, `spatial-video`
